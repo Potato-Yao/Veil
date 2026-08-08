@@ -1,0 +1,14 @@
+package com.potato;
+
+public enum KeyType {
+    TEXT,
+    LONG;
+
+    @Override
+    public String toString() {
+        return switch (this) {
+            case TEXT -> "TEXT";
+            case LONG -> "BIGINT";
+        };
+    }
+}
