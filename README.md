@@ -8,6 +8,7 @@ A Java library for storing and managing files with metadata.
 import com.potato.*;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
@@ -30,6 +31,18 @@ public class Main {
         byte[] data = "hello veil!".getBytes(StandardCharsets.UTF_8);
         avatarManager.overwritePut("user123", "avatar.png",
                 new ByteArrayInputStream(data), Map.of("user_id", "u1"));
+
+        // 5. Retrieve an object: metadata plus a stream of its contents.
+        ObjectData object = avatarManager.get("user123", Map.of("user_id", "u1"));
+        try (InputStream stream = object.stream()) {
+            byte[] content = stream.readAllBytes();
+            System.out.println(object.metadata().fileName() + " (" + object.metadata().fileSize() + " bytes)");
+        }
+
+        // 6. Check existence and remove an object.
+        System.out.println(avatarManager.checkExist("user123", Map.of("user_id", "u1"))); // true
+        avatarManager.remove("user123", Map.of("user_id", "u1"));
+        System.out.println(avatarManager.checkExist("user123", Map.of("user_id", "u1"))); // false
     }
 }
 ```

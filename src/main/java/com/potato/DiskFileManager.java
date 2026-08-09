@@ -82,6 +82,21 @@ public class DiskFileManager extends FileManager {
     }
 
     /**
+     * Opens an {@link InputStream} to {@code rootPath.resolve(location)}.
+     *
+     * @param location  the relative location of the object
+     * @return an {@link InputStream} for reading the object data
+     */
+    @Override
+    public InputStream read(String location) {
+        try {
+            return Files.newInputStream(resolve(location));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
      * Deletes the object at {@code rootPath.resolve(location)} if it exists.
      *
      * @param location  the relative location of the object

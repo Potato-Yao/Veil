@@ -36,6 +36,14 @@ public abstract class FileManager {
     public abstract OutputStream get(String location);
 
     /**
+     * Opens an input stream that reads from the specified location.
+     *
+     * @param location  the relative location of the object
+     * @return an {@link InputStream} for reading the object data
+     */
+    public abstract InputStream read(String location);
+
+    /**
      * Deletes the object at the specified location.
      *
      * @param location  the relative location of the object

@@ -129,4 +129,66 @@ class ObjectManagerTest {
         assertFalse(Files.exists(tempDir.resolve("objects/obj4_u4")));
         assertArrayEquals(second, Files.readAllBytes(tempDir.resolve("objects/obj4_u4b")));
     }
+
+    @Test
+    void getReturnsMetadataAndContent() throws Exception {
+        byte[] data = "get me".getBytes();
+        String primaryKey = "obj5";
+        String fileName = "get.txt";
+
+        objectManager.put(primaryKey, fileName, new ByteArrayInputStream(data), Map.of("user_id", "u5"));
+
+        try (ObjectData object = objectManager.get(primaryKey, Map.of("user_id", "u5"))) {
+            assertEquals(fileName, object.metadata().fileName());
+            assertEquals("txt", object.metadata().fileExtension());
+            assertEquals(data.length, object.metadata().fileSize());
+            assertEquals("DISK", object.metadata().storageType());
+            assertEquals("objects/obj5_u5", object.metadata().storageLocation());
+            assertArrayEquals(data, object.stream().readAllBytes());
+        }
+    }
+
+    @Test
+    void getThrowsWhenObjectDoesNotExist() {
+        assertThrows(IllegalArgumentException.class, () ->
+                objectManager.get("missing", Map.of("user_id", "uX")));
+    }
+
+    @Test
+    void removeDeletesFileAndMetadata() throws Exception {
+        byte[] data = "bye".getBytes();
+        String primaryKey = "obj6";
+        String fileName = "bye.txt";
+
+        objectManager.put(primaryKey, fileName, new ByteArrayInputStream(data), Map.of("user_id", "u6"));
+        assertTrue(Files.exists(tempDir.resolve("objects/obj6_u6")));
+
+        assertTrue(objectManager.remove(primaryKey, Map.of("user_id", "u6")));
+        assertFalse(Files.exists(tempDir.resolve("objects/obj6_u6")));
+
+        try (var connection = dataSource.getConnection();
+             var statement = connection.prepareStatement(
+                     "SELECT 1 FROM veil_metadata_objects WHERE key = ?")) {
+            statement.setString(1, primaryKey);
+            var resultSet = statement.executeQuery();
+            assertFalse(resultSet.next());
+        }
+    }
+
+    @Test
+    void removeThrowsWhenObjectDoesNotExist() {
+        assertThrows(IllegalArgumentException.class, () ->
+                objectManager.remove("missing", Map.of("user_id", "uX")));
+    }
+
+    @Test
+    void checkExistReflectsPutAndRemove() throws Exception {
+        String primaryKey = "obj7";
+
+        assertFalse(objectManager.checkExist(primaryKey, Map.of("user_id", "u7")));
+        objectManager.put(primaryKey, "check.txt", new ByteArrayInputStream("check".getBytes()), Map.of("user_id", "u7"));
+        assertTrue(objectManager.checkExist(primaryKey, Map.of("user_id", "u7")));
+        objectManager.remove(primaryKey, Map.of("user_id", "u7"));
+        assertFalse(objectManager.checkExist(primaryKey, Map.of("user_id", "u7")));
+    }
 }

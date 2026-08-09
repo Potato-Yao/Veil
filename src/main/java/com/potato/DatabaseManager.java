@@ -168,6 +168,57 @@ public abstract class DatabaseManager {
     }
 
     /**
+     * Returns the metadata of the object with the given key.
+     *
+     * @param namespace  the namespace of the object
+     * @param key        the primary key of the object
+     * @return the object's metadata, or {@code null} if no such object exists
+     */
+    public ObjectMetadata getMetadata(String namespace, String key) {
+        String sql = "SELECT file_name, file_extension, file_size, md5, created_at, last_accessed_at,"
+                + " storage_type, storage_location FROM " + Config.DATABASE_PREFIX + "_" + namespace
+                + " WHERE key = ?";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, key);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return null;
+                }
+                return new ObjectMetadata(
+                        resultSet.getString("file_name"),
+                        resultSet.getString("file_extension"),
+                        resultSet.getLong("file_size"),
+                        resultSet.getString("md5"),
+                        resultSet.getString("created_at"),
+                        resultSet.getString("last_accessed_at"),
+                        resultSet.getString("storage_type"),
+                        resultSet.getString("storage_location"));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Deletes the metadata row of the object with the given key.
+     *
+     * @param namespace  the namespace of the object
+     * @param key        the primary key of the object
+     * @return {@code true} if a row was removed, {@code false} if no such object exists
+     */
+    public boolean delete(String namespace, String key) {
+        String sql = "DELETE FROM " + Config.DATABASE_PREFIX + "_" + namespace + " WHERE key = ?";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, key);
+            return statement.executeUpdate() > 0;
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
      * Builds and executes the INSERT (or UPSERT) statement for an object's metadata.
      *
      * <p>Dynamically assembles the column list from the additional key columns and the

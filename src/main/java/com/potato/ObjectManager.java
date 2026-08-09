@@ -42,8 +42,8 @@ public class ObjectManager {
      * <p>Registers the namespace and creates its metadata table in the database. Each
      * namespace may be built only once per JVM.</p>
      *
-     * @param namespace        the namespace to manage; must be unique
-     * @param databaseManager  the database manager used for metadata persistence
+     * @param namespace       the namespace to manage; must be unique
+     * @param databaseManager the database manager used for metadata persistence
      * @return a new {@link ObjectManager} bound to the namespace
      * @throws IllegalArgumentException if the namespace is already taken
      */
@@ -70,10 +70,10 @@ public class ObjectManager {
      * exception. Use {@link #overwritePut(String, String, InputStream, Map)} to replace
      * an existing object.</p>
      *
-     * @param primaryKey   unique key identifying the object
-     * @param fileName     original file name; its extension is stored as metadata
-     * @param source       stream containing the object data
-     * @param additionKey  values for the additional key columns, or {@code null}
+     * @param primaryKey  unique key identifying the object
+     * @param fileName    original file name; its extension is stored as metadata
+     * @param source      stream containing the object data
+     * @param additionKey values for the additional key columns, or {@code null}
      * @throws IllegalArgumentException if {@code additionKey} contains an unknown column
      */
     public void put(String primaryKey, String fileName, InputStream source, Map<String, String> additionKey) {
@@ -86,14 +86,69 @@ public class ObjectManager {
      * <p>When the resolved storage location differs from the previous one, the old file
      * is deleted from storage before the new data is written.</p>
      *
-     * @param primaryKey   unique key identifying the object
-     * @param fileName     original file name; its extension is stored as metadata
-     * @param source       stream containing the object data
-     * @param additionKey  values for the additional key columns, or {@code null}
+     * @param primaryKey  unique key identifying the object
+     * @param fileName    original file name; its extension is stored as metadata
+     * @param source      stream containing the object data
+     * @param additionKey values for the additional key columns, or {@code null}
      * @throws IllegalArgumentException if {@code additionKey} contains an unknown column
      */
     public void overwritePut(String primaryKey, String fileName, InputStream source, Map<String, String> additionKey) {
         store(primaryKey, fileName, source, additionKey, true);
+    }
+
+    /**
+     * Retrieves a stored object.
+     *
+     * <p>Returns the object's metadata together with an {@link InputStream} of its
+     * contents. The caller is responsible for closing the returned stream.</p>
+     *
+     * @param primaryKey  unique key identifying the object
+     * @param additionKey values for the additional key columns, or {@code null}
+     * @return the object's metadata and content stream
+     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column,
+     *                                  or if no object with the given key exists
+     */
+    public ObjectData get(String primaryKey, Map<String, String> additionKey) {
+        validateAdditionKeys(additionKey);
+        ObjectMetadata metadata = databaseManager.getMetadata(namespace, primaryKey);
+        if (metadata == null) {
+            throw new IllegalArgumentException("Object \"" + primaryKey + "\" does not exist in namespace \"" + namespace + "\"");
+        }
+        InputStream stream = mainStorageManager.read(buildLocation(primaryKey, additionKey));
+        return new ObjectData(metadata, stream);
+    }
+
+    /**
+     * Removes a stored object, deleting both its file and its metadata row.
+     *
+     * @param primaryKey  unique key identifying the object
+     * @param additionKey values for the additional key columns, or {@code null}
+     * @return {@code true} once the object has been removed
+     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column,
+     *                                  or if no object with the given key exists
+     */
+    public boolean remove(String primaryKey, Map<String, String> additionKey) {
+        validateAdditionKeys(additionKey);
+        String location = databaseManager.getStorageLocation(namespace, primaryKey);
+        if (location == null) {
+            throw new IllegalArgumentException("Object \"" + primaryKey + "\" does not exist in namespace \"" + namespace + "\"");
+        }
+        mainStorageManager.delete(location);
+        databaseManager.delete(namespace, primaryKey);
+        return true;
+    }
+
+    /**
+     * Checks whether an object with the given key exists.
+     *
+     * @param primaryKey  unique key identifying the object
+     * @param additionKey values for the additional key columns, or {@code null}
+     * @return {@code true} if the object exists, {@code false} otherwise
+     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column
+     */
+    public boolean checkExist(String primaryKey, Map<String, String> additionKey) {
+        validateAdditionKeys(additionKey);
+        return databaseManager.getStorageLocation(namespace, primaryKey) != null;
     }
 
     /**
@@ -106,11 +161,11 @@ public class ObjectManager {
      * location is deleted first and the metadata row is upserted; otherwise a new row is
      * inserted.</p>
      *
-     * @param primaryKey   unique key identifying the object
-     * @param fileName     original file name
-     * @param source       stream containing the object data
-     * @param additionKey  values for the additional key columns, or {@code null}
-     * @param overwrite    whether to replace an existing object with the same key
+     * @param primaryKey  unique key identifying the object
+     * @param fileName    original file name
+     * @param source      stream containing the object data
+     * @param additionKey values for the additional key columns, or {@code null}
+     * @param overwrite   whether to replace an existing object with the same key
      */
     private void store(String primaryKey, String fileName, InputStream source, Map<String, String> additionKey, boolean overwrite) {
         validateAdditionKeys(additionKey);
@@ -149,7 +204,7 @@ public class ObjectManager {
     /**
      * Ensures all names in {@code additionKey} are defined additional key columns.
      *
-     * @param additionKey  the additional key values to validate, or {@code null}
+     * @param additionKey the additional key values to validate, or {@code null}
      * @throws IllegalArgumentException if a key is not a known additional key column
      */
     private void validateAdditionKeys(Map<String, String> additionKey) {
@@ -168,8 +223,8 @@ public class ObjectManager {
      * {@code <key>} is the primary key followed by {@code _value} for each provided
      * additional key column, in the order the columns are defined in the database.
      *
-     * @param primaryKey   the primary key of the object
-     * @param additionKey  the additional key values, or {@code null}
+     * @param primaryKey  the primary key of the object
+     * @param additionKey the additional key values, or {@code null}
      * @return the storage location relative to the file manager root
      */
     private String buildLocation(String primaryKey, Map<String, String> additionKey) {
@@ -187,7 +242,7 @@ public class ObjectManager {
     /**
      * Extracts the extension from a file name, without the leading dot.
      *
-     * @param fileName  the file name to inspect
+     * @param fileName the file name to inspect
      * @return the extension, or an empty string if the name has no dot
      */
     private String extractExtension(String fileName) {
@@ -198,7 +253,7 @@ public class ObjectManager {
     /**
      * Checks whether a namespace has already been registered.
      *
-     * @param namespace  the namespace to check
+     * @param namespace the namespace to check
      * @return {@code true} if the namespace is already taken, {@code false} otherwise
      */
     public static boolean checkDuplicateNamespace(String namespace) {
