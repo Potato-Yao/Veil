@@ -30,7 +30,7 @@ public class VeilConfiguration {
     public static VeilConfiguration initForDev() {
         SQLiteDataSource dataSource = new SQLiteDataSource();
         dataSource.setUrl("jdbc:sqlite:./veil_metadata.db");
-        FileManager mainStorageManager = new FileManager();
+        FileManager mainStorageManager = new DiskFileManager();
         return init(dataSource, mainStorageManager, null);
     }
 
