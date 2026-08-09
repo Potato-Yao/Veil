@@ -7,7 +7,7 @@ import java.util.Map;
 public class Main {
     public static void main(String[] args) {
         VeilConfiguration veilConfiguration = VeilConfiguration.initForDev();
-        SqliteDatabaseManager databaseManager = DatabaseManager.builder()
+        DatabaseManager databaseManager = DatabaseManager.builder()
                 .dataSource(veilConfiguration.getDataSource())
                 .keyColumn("user_id", KeyType.TEXT)
                 .build();

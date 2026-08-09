@@ -23,7 +23,7 @@ import java.util.Map;
  * {@code user_id}). Instances are created with {@link #build(String, DatabaseManager)}.</p>
  */
 public class ObjectManager {
-    private static ArrayList<String> namespaceList = new ArrayList<>();
+    private static final ArrayList<String> namespaceList = new ArrayList<>();
     private final String namespace;
     private final FileManager mainStorageManager;
     private final FileManager cacheStorageManager;
@@ -58,6 +58,7 @@ public class ObjectManager {
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
+        namespaceList.add(namespace);
 
         return new ObjectManager(namespace, configuration.getMainStorageManager(), configuration.getCacheManager(), databaseManager);
     }

@@ -67,3 +67,27 @@ dependencies {
 ```
 
 > **Note:** `VeilConfiguration` must be initialized before any `ObjectManager` is built.
+
+## PostgreSQL
+
+By default metadata is persisted in SQLite. To use PostgreSQL instead, pass a PostgreSQL
+`DataSource` and select `DatabaseType.POSTGRES` when building the `DatabaseManager`:
+
+```java
+import com.potato.*;
+import org.postgresql.ds.PGSimpleDataSource;
+
+PGSimpleDataSource dataSource = new PGSimpleDataSource();
+dataSource.setUrl("jdbc:postgresql://localhost:5432/veil");
+dataSource.setUser("veil");
+dataSource.setPassword("secret");
+
+DatabaseManager databaseManager = DatabaseManager.builder()
+        .dataSource(dataSource)
+        .databaseType(DatabaseType.POSTGRES)
+        .keyColumn("user_id", KeyType.TEXT)
+        .build();
+```
+
+The `org.postgresql:postgresql` driver is bundled with the library, so no extra
+dependency is required to use it.

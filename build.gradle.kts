@@ -12,13 +12,21 @@ repositories {
 
 dependencies {
     implementation("org.xerial:sqlite-jdbc:3.53.2.1")
+    implementation("org.postgresql:postgresql:42.7.11")
 
     testImplementation(platform("org.junit:junit-bom:6.0.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    testImplementation(platform("org.testcontainers:testcontainers-bom:2.0.5"))
+    testImplementation("org.testcontainers:testcontainers-postgresql")
+    testImplementation("org.testcontainers:testcontainers-junit-jupiter")
 }
 
 java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
     withSourcesJar()
     withJavadocJar()
 }
@@ -38,4 +46,5 @@ publishing {
 
 tasks.test {
     useJUnitPlatform()
+    forkEvery = 1
 }

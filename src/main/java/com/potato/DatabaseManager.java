@@ -5,6 +5,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -20,7 +21,8 @@ import java.util.Map;
  * file name, extension, size, MD5, timestamps and storage location.</p>
  *
  * <p>Concrete implementations are built with {@link #builder()}; see
- * {@link SqliteDatabaseManager} for the SQLite-based implementation.</p>
+ * {@link SqliteDatabaseManager} and {@link PostgresDatabaseManager} for the SQLite- and
+ * PostgreSQL-based implementations.</p>
  */
 public abstract class DatabaseManager {
     protected final DataSource dataSource;
@@ -60,10 +62,31 @@ public abstract class DatabaseManager {
     /**
      * Creates the metadata table for the given namespace.
      *
+     * <p>The table is named {@code veil_metadata_<name>} and contains the key columns
+     * and the standard metadata columns.</p>
+     *
      * @param name  the namespace to create the table for
      * @throws SQLException if the table could not be created
      */
-    public abstract void createTable(String name) throws SQLException;
+    public void createTable(String name) throws SQLException {
+        String tableName = Config.DATABASE_PREFIX + "_" + name;
+        String sql = "CREATE TABLE IF NOT EXISTS " + tableName + " (" + columnDefinitions() + ")";
+
+        try (Connection connection = getConnection();
+             Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        }
+    }
+
+    /**
+     * @return the full column definitions for a metadata table, joining the key columns
+     *         and the metadata columns
+     */
+    private String columnDefinitions() {
+        List<String> columns = new ArrayList<>(keyColumns);
+        columns.addAll(metadataColumns);
+        return String.join(", ", columns);
+    }
 
     /**
      * @return the names of the additional key columns defined for this database manager
@@ -240,10 +263,12 @@ public abstract class DatabaseManager {
      *
      * <p>The {@link DataSource} is required and additional key columns may be declared
      * with {@link #keyColumn(String, KeyType)}. {@link #build()} returns a
+     * {@link DatabaseManager} for the configured {@link DatabaseType}, defaulting to
      * {@link SqliteDatabaseManager}.</p>
      */
     public static class Builder {
         private DataSource dataSource;
+        private DatabaseType databaseType = DatabaseType.SQLITE;
         private final HashMap<String, KeyType> keyColumns = new HashMap<>();
 
         /**
@@ -254,6 +279,17 @@ public abstract class DatabaseManager {
          */
         public Builder dataSource(DataSource dataSource) {
             this.dataSource = dataSource;
+            return this;
+        }
+
+        /**
+         * Sets the database engine backing this database manager.
+         *
+         * @param databaseType  the database type to use
+         * @return this builder
+         */
+        public Builder databaseType(DatabaseType databaseType) {
+            this.databaseType = databaseType;
             return this;
         }
 
@@ -275,10 +311,13 @@ public abstract class DatabaseManager {
         /**
          * Builds the configured {@link DatabaseManager}.
          *
-         * @return a new {@link SqliteDatabaseManager}
+         * @return a new {@link DatabaseManager} for the configured {@link DatabaseType}
          */
-        public SqliteDatabaseManager build() {
-            return new SqliteDatabaseManager(dataSource, keyColumns);
+        public DatabaseManager build() {
+            return switch (databaseType) {
+                case SQLITE -> new SqliteDatabaseManager(dataSource, keyColumns);
+                case POSTGRES -> new PostgresDatabaseManager(dataSource, keyColumns);
+            };
         }
     }
 }
