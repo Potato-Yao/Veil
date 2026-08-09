@@ -11,6 +11,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Abstract persistence layer for object metadata.
+ *
+ * <p>Each namespace gets a table named {@code veil_metadata_<namespace>} holding a
+ * primary {@code key} column, any additional key columns (defined via
+ * {@link Builder#keyColumn(String, KeyType)}), and standard metadata columns such as
+ * file name, extension, size, MD5, timestamps and storage location.</p>
+ *
+ * <p>Concrete implementations are built with {@link #builder()}; see
+ * {@link SqliteDatabaseManager} for the SQLite-based implementation.</p>
+ */
 public abstract class DatabaseManager {
     protected final DataSource dataSource;
     protected final ArrayList<String> keyColumns;
@@ -46,12 +57,40 @@ public abstract class DatabaseManager {
         return dataSource.getConnection();
     }
 
+    /**
+     * Creates the metadata table for the given namespace.
+     *
+     * @param name  the namespace to create the table for
+     * @throws SQLException if the table could not be created
+     */
     public abstract void createTable(String name) throws SQLException;
 
+    /**
+     * @return the names of the additional key columns defined for this database manager
+     */
     public ArrayList<String> getAdditionalKeyColumnNames() {
         return additionalKeyColumnNames;
     }
 
+    /**
+     * Inserts a new metadata row for an object.
+     *
+     * <p>Fails if a row with the same key already exists. Use
+     * {@link #upsert(String, String, Map, String, String, long, String, String, String, String)}
+     * to replace an existing row.</p>
+     *
+     * @param namespace        the namespace the object belongs to
+     * @param key              the primary key of the object
+     * @param additionKeys     values for the additional key columns, or {@code null}
+     * @param fileName         the stored file name
+     * @param extension        the file extension
+     * @param size             the size of the file in bytes
+     * @param md5              the MD5 digest of the file contents in hex
+     * @param createdAt        ISO-8601 timestamp of creation
+     * @param storageType      the type of storage (e.g. {@code "DISK"})
+     * @param storageLocation  the location of the file within the file manager
+     * @throws IllegalArgumentException if {@code additionKeys} contains an unknown column
+     */
     public void insert(String namespace, String key, Map<String, String> additionKeys,
                        String fileName, String extension, long size, String md5,
                        String createdAt, String storageType, String storageLocation) {
@@ -59,6 +98,24 @@ public abstract class DatabaseManager {
                 createdAt, storageType, storageLocation, false);
     }
 
+    /**
+     * Inserts or replaces the metadata row for an object.
+     *
+     * <p>When a row with the same key already exists, its metadata columns are updated
+     * in place.</p>
+     *
+     * @param namespace        the namespace the object belongs to
+     * @param key              the primary key of the object
+     * @param additionKeys     values for the additional key columns, or {@code null}
+     * @param fileName         the stored file name
+     * @param extension        the file extension
+     * @param size             the size of the file in bytes
+     * @param md5              the MD5 digest of the file contents in hex
+     * @param createdAt        ISO-8601 timestamp of creation
+     * @param storageType      the type of storage (e.g. {@code "DISK"})
+     * @param storageLocation  the location of the file within the file manager
+     * @throws IllegalArgumentException if {@code additionKeys} contains an unknown column
+     */
     public void upsert(String namespace, String key, Map<String, String> additionKeys,
                        String fileName, String extension, long size, String md5,
                        String createdAt, String storageType, String storageLocation) {
@@ -66,6 +123,13 @@ public abstract class DatabaseManager {
                 createdAt, storageType, storageLocation, true);
     }
 
+    /**
+     * Returns the storage location of the object with the given key.
+     *
+     * @param namespace  the namespace of the object
+     * @param key        the primary key of the object
+     * @return the storage location, or {@code null} if no such object exists
+     */
     public String getStorageLocation(String namespace, String key) {
         String sql = "SELECT storage_location FROM " + Config.DATABASE_PREFIX + "_" + namespace
                 + " WHERE key = ?";
@@ -80,6 +144,26 @@ public abstract class DatabaseManager {
         }
     }
 
+    /**
+     * Builds and executes the INSERT (or UPSERT) statement for an object's metadata.
+     *
+     * <p>Dynamically assembles the column list from the additional key columns and the
+     * standard metadata columns. When {@code overwrite} is {@code true}, the statement
+     * is appended with {@code ON CONFLICT(key) DO UPDATE} to replace existing rows.</p>
+     *
+     * @param namespace        the namespace the object belongs to
+     * @param key              the primary key of the object
+     * @param additionKeys     values for the additional key columns, or {@code null}
+     * @param fileName         the stored file name
+     * @param extension        the file extension
+     * @param size             the size of the file in bytes
+     * @param md5              the MD5 digest of the file contents in hex
+     * @param createdAt        ISO-8601 timestamp of creation
+     * @param storageType      the type of storage (e.g. {@code "DISK"})
+     * @param storageLocation  the location of the file within the file manager
+     * @param overwrite        whether to replace an existing row with the same key
+     * @throws IllegalArgumentException if {@code additionKeys} contains an unknown column
+     */
     private void executeInsert(String namespace, String key, Map<String, String> additionKeys,
                                String fileName, String extension, long size, String md5,
                                String createdAt, String storageType, String storageLocation,
@@ -142,24 +226,57 @@ public abstract class DatabaseManager {
         }
     }
 
+    /**
+     * Starts building a {@link DatabaseManager}.
+     *
+     * @return a new {@link Builder}
+     */
     public static Builder builder() {
         return new Builder();
     }
 
+    /**
+     * Builder for configuring and constructing a {@link DatabaseManager}.
+     *
+     * <p>The {@link DataSource} is required and additional key columns may be declared
+     * with {@link #keyColumn(String, KeyType)}. {@link #build()} returns a
+     * {@link SqliteDatabaseManager}.</p>
+     */
     public static class Builder {
         private DataSource dataSource;
         private final HashMap<String, KeyType> keyColumns = new HashMap<>();
 
+        /**
+         * Sets the data source used for metadata persistence.
+         *
+         * @param dataSource  the {@link DataSource} to use
+         * @return this builder
+         */
         public Builder dataSource(DataSource dataSource) {
             this.dataSource = dataSource;
             return this;
         }
 
+        /**
+         * Declares an additional key column.
+         *
+         * <p>Additional keys extend the primary key so that objects can be addressed by
+         * more than one value, for example a {@code user_id}.</p>
+         *
+         * @param name  the column name
+         * @param type  the column type
+         * @return this builder
+         */
         public Builder keyColumn(String name, KeyType type) {
             keyColumns.put(name, type);
             return this;
         }
 
+        /**
+         * Builds the configured {@link DatabaseManager}.
+         *
+         * @return a new {@link SqliteDatabaseManager}
+         */
         public SqliteDatabaseManager build() {
             return new SqliteDatabaseManager(dataSource, keyColumns);
         }

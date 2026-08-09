@@ -1,5 +1,6 @@
 plugins {
-    id("java")
+    `java-library`
+    `maven-publish`
 }
 
 group = "com.potato"
@@ -15,6 +16,24 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:6.0.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+java {
+    withSourcesJar()
+    withJavadocJar()
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("mavenJava") {
+            from(components["java"])
+
+            pom {
+                name = "Veil"
+                description = "A Java file management library"
+            }
+        }
+    }
 }
 
 tasks.test {

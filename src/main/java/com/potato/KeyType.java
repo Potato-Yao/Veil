@@ -1,5 +1,8 @@
 package com.potato;
 
+/**
+ * SQL column types available for additional key columns.
+ */
 public enum KeyType {
     TEXT,
     LONG;

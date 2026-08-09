@@ -7,22 +7,49 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+/**
+ * {@link FileManager} implementation backed by the local filesystem.
+ *
+ * <p>All locations are resolved against a root path (the current working directory by
+ * default) and normalized. Reading a location opens an {@link OutputStream} that
+ * overwrites the target file, creating any parent directories as needed.</p>
+ */
 public class DiskFileManager extends FileManager {
     private final Path rootPath;
 
+    /**
+     * Creates a file manager rooted at the current working directory.
+     */
     public DiskFileManager() {
         this(Path.of(""));
     }
 
+    /**
+     * Creates a file manager rooted at the given path.
+     *
+     * @param rootPath  the root directory that all locations resolve against
+     */
     public DiskFileManager(Path rootPath) {
         this.rootPath = rootPath;
     }
 
+    /**
+     * Creates a new {@link DiskFileManager} with the same root path.
+     *
+     * @return a new {@link DiskFileManager}
+     */
     @Override
     public FileManager build() {
         return new DiskFileManager(rootPath);
     }
 
+    /**
+     * Writes the stream contents to {@code rootPath.resolve(location)}, creating parent
+     * directories as needed.
+     *
+     * @param location     the relative location of the object
+     * @param inputStream  the stream to read the object data from
+     */
     @Override
     public void put(String location, InputStream inputStream) {
         Path target = resolve(location);
@@ -36,6 +63,13 @@ public class DiskFileManager extends FileManager {
         }
     }
 
+    /**
+     * Opens an {@link OutputStream} to {@code rootPath.resolve(location)}, creating
+     * parent directories as needed.
+     *
+     * @param location  the relative location of the object
+     * @return an {@link OutputStream} for writing the object data
+     */
     @Override
     public OutputStream get(String location) {
         Path target = resolve(location);
@@ -47,6 +81,11 @@ public class DiskFileManager extends FileManager {
         }
     }
 
+    /**
+     * Deletes the object at {@code rootPath.resolve(location)} if it exists.
+     *
+     * @param location  the relative location of the object
+     */
     @Override
     public void delete(String location) {
         Path target = resolve(location);
@@ -57,6 +96,12 @@ public class DiskFileManager extends FileManager {
         }
     }
 
+    /**
+     * Resolves a location against the root path and normalizes it.
+     *
+     * @param location  the relative location of the object
+     * @return the absolute target path
+     */
     private Path resolve(String location) {
         return rootPath.resolve(location).normalize();
     }
