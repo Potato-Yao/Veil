@@ -68,7 +68,7 @@ public class ObjectManager {
      * Stores a new object under the given primary key.
      *
      * <p>If an object with the same primary key already exists, the store fails with an
-     * exception. Use {@link #overwritePut(String, String, InputStream, Map)} to replace
+     * exception. Use {@link #update(String, String, InputStream, Map)} to replace
      * an existing object.</p>
      *
      * @param primaryKey  unique key identifying the object
@@ -85,7 +85,8 @@ public class ObjectManager {
      * Stores an object, replacing any existing object with the same primary key.
      *
      * <p>When the resolved storage location differs from the previous one, the old file
-     * is deleted from storage before the new data is written.</p>
+     * is deleted from storage before the new data is written. Access statistics are
+     * preserved across the replacement.</p>
      *
      * @param primaryKey  unique key identifying the object
      * @param fileName    original file name; its extension is stored as metadata
@@ -93,7 +94,7 @@ public class ObjectManager {
      * @param additionKey values for the additional key columns, or {@code null}
      * @throws IllegalArgumentException if {@code additionKey} contains an unknown column
      */
-    public void overwritePut(String primaryKey, String fileName, InputStream source, Map<String, String> additionKey) {
+    public void update(String primaryKey, String fileName, InputStream source, Map<String, String> additionKey) {
         store(primaryKey, fileName, source, additionKey, true);
     }
 
@@ -156,29 +157,71 @@ public class ObjectManager {
     /**
      * Runs a query over the metadata of this namespace.
      *
-     * @param statement  the query to run
+     * @param statement  the statement to run
      * @return the matching objects as {@link ObjectReference}s, ordered and limited as
      *         specified by {@code statement}
      * @throws IllegalArgumentException if {@code statement} references an unknown column
      */
-    public List<ObjectReference> query(QueryStatement statement) {
+    public List<ObjectReference> query(ObjectStatement statement) {
         return databaseManager.query(namespace, statement);
     }
 
     /**
-     * Counts the objects in this namespace matching the given query's conditions.
+     * Counts the objects in this namespace matching the given statement's conditions.
      *
-     * @param statement  the query whose conditions should be applied
+     * @param statement  the statement whose conditions should be applied
      * @return the number of matching objects
      * @throws IllegalArgumentException if {@code statement} references an unknown column
      */
-    public long count(QueryStatement statement) {
+    public long count(ObjectStatement statement) {
         return databaseManager.count(namespace, statement);
     }
 
     /**
+     * Partially updates the metadata of a stored object without touching its content.
+     *
+     * <p>The statement must carry at least one {@code set(...)} assignment and no
+     * conditions: the target object is identified by its primary key (and additional
+     * keys). Only the assigned metadata columns are changed; content, access statistics,
+     * and creation time are left untouched.</p>
+     *
+     * @param primaryKey  unique key identifying the object
+     * @param additionKey values for the additional key columns, or {@code null}
+     * @param statement   the assignments to apply
+     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column,
+     *                                  if the object does not exist, or if the statement
+     *                                  has no assignments or carries conditions
+     */
+    public void updateMetadata(String primaryKey, Map<String, String> additionKey, ObjectStatement statement) {
+        validateAdditionKeys(additionKey);
+        statement.validateFor(ObjectStatement.Operation.UPDATE_BY_KEY);
+        if (databaseManager.getStorageLocation(namespace, primaryKey) == null) {
+            throw new IllegalArgumentException("Object \"" + primaryKey + "\" does not exist in namespace \"" + namespace + "\"");
+        }
+        databaseManager.executeUpdate(namespace, primaryKey, statement);
+    }
+
+    /**
+     * Removes every object matching the given statement, deleting both the files and
+     * their metadata rows.
+     *
+     * <p>An empty statement removes every object in the namespace.</p>
+     *
+     * @param statement  the statement whose conditions should be applied
+     * @return the number of removed objects
+     * @throws IllegalArgumentException if {@code statement} references an unknown column
+     */
+    public long removeAll(ObjectStatement statement) {
+        List<ObjectReference> references = databaseManager.query(namespace, statement);
+        for (ObjectReference reference : references) {
+            mainStorageManager.delete(reference.metadata().storageLocation());
+        }
+        return databaseManager.executeDelete(namespace, statement);
+    }
+
+    /**
      * Common store routine shared by {@link #put(String, String, InputStream, Map)} and
-     * {@link #overwritePut(String, String, InputStream, Map)}.
+     * {@link #update(String, String, InputStream, Map)}.
      *
      * <p>Validates the additional keys, resolves the storage location, writes the file
      * while computing its size and MD5 digest, then persists the metadata. When

@@ -122,7 +122,7 @@ class PostgresDatabaseManagerTest {
         byte[] data = "hello pg".getBytes();
         String key = "user123";
 
-        objectManager.overwritePut(key, "avatar.png", new ByteArrayInputStream(data), Map.of("user_id", "u1"));
+        objectManager.update(key, "avatar.png", new ByteArrayInputStream(data), Map.of("user_id", "u1"));
 
         Path stored = tempDir.resolve(NAMESPACE + "/user123_u1");
         assertTrue(Files.exists(stored));

@@ -265,7 +265,8 @@ public abstract class DatabaseManager {
      * @return the matching objects, ordered and limited as specified by {@code statement}
      * @throws IllegalArgumentException if {@code statement} references an unknown column
      */
-    public List<ObjectReference> query(String namespace, QueryStatement statement) {
+    public List<ObjectReference> query(String namespace, ObjectStatement statement) {
+        statement.validateFor(ObjectStatement.Operation.QUERY);
         BuiltQuery builtQuery = buildQuery(namespace, statement, false);
 
         List<ObjectReference> results = new ArrayList<>();
@@ -302,16 +303,19 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Counts the objects in a namespace matching the given query's conditions.
+     * Counts the objects in a namespace matching the given statement's conditions.
      *
-     * <p>Ordering, limit and offset are ignored.</p>
+     * <p>The statement must not carry assignments. Ordering, limit and offset are
+     * ignored.</p>
      *
      * @param namespace  the namespace to query
-     * @param statement  the query whose conditions should be applied
+     * @param statement  the statement whose conditions should be applied
      * @return the number of matching objects
-     * @throws IllegalArgumentException if {@code statement} references an unknown column
+     * @throws IllegalArgumentException if {@code statement} does not fit a query or
+     *                                  references an unknown column
      */
-    public long count(String namespace, QueryStatement statement) {
+    public long count(String namespace, ObjectStatement statement) {
+        statement.validateFor(ObjectStatement.Operation.QUERY);
         BuiltQuery builtQuery = buildQuery(namespace, statement, true);
 
         try (Connection connection = getConnection();
@@ -326,18 +330,157 @@ public abstract class DatabaseManager {
     }
 
     /**
+     * Updates the metadata rows of a namespace matching the given statement's
+     * conditions.
+     *
+     * <p>The statement's assignments form the {@code SET} clause; only metadata columns
+     * are updatable. Returns the number of rows changed.</p>
+     *
+     * @param namespace  the namespace to update
+     * @param statement  the statement carrying the assignments and conditions
+     * @return the number of updated rows
+     * @throws IllegalArgumentException if the statement has no assignments or references
+     *                                  an unknown or non-updatable column
+     */
+    public long executeUpdate(String namespace, ObjectStatement statement) {
+        return executeUpdate(namespace, null, statement);
+    }
+
+    /**
+     * Updates the metadata row of a single object, targeting it by primary key.
+     *
+     * <p>Applies the statement's assignments to the row whose key matches
+     * {@code key}, additionally restricted by any conditions in the statement. Returns
+     * the number of rows changed.</p>
+     *
+     * @param namespace  the namespace of the object
+     * @param key        the primary key of the object to update
+     * @param statement  the statement carrying the assignments (and optional conditions)
+     * @return the number of updated rows
+     * @throws IllegalArgumentException if the statement has no assignments or references
+     *                                  an unknown or non-updatable column
+     */
+    public long executeUpdate(String namespace, String key, ObjectStatement statement) {
+        statement.validateFor(ObjectStatement.Operation.UPDATE);
+
+        List<QueryValue> params = new ArrayList<>();
+        List<String> setClauses = new ArrayList<>();
+        for (ObjectStatement.Assignment assignment : statement.assignments()) {
+            validateUpdateColumn(assignment.column());
+            setClauses.add(assignment.column() + " = ?");
+            params.add(assignment.value());
+        }
+
+        List<String> conditions = new ArrayList<>();
+        if (key != null) {
+            conditions.add("key = ?");
+            params.add(new QueryValue.StringValue(key));
+        }
+        conditions.addAll(buildConditions(statement, params));
+
+        StringBuilder sql = new StringBuilder("UPDATE ").append(Config.DATABASE_PREFIX).append("_").append(namespace)
+                .append(" SET ").append(String.join(", ", setClauses));
+        if (!conditions.isEmpty()) {
+            sql.append(" WHERE ").append(String.join(" AND ", conditions));
+        }
+
+        return executeUpdateSql(sql.toString(), params);
+    }
+
+    /**
+     * Deletes the metadata rows of a namespace matching the given statement's
+     * conditions.
+     *
+     * <p>The statement must not carry assignments; ordering, limit and offset are
+     * ignored. An empty statement deletes every row in the namespace.</p>
+     *
+     * @param namespace  the namespace to delete from
+     * @param statement  the statement whose conditions should be applied
+     * @return the number of deleted rows
+     * @throws IllegalArgumentException if {@code statement} does not fit a delete or
+     *                                  references an unknown column
+     */
+    public long executeDelete(String namespace, ObjectStatement statement) {
+        statement.validateFor(ObjectStatement.Operation.DELETE);
+        List<QueryValue> params = new ArrayList<>();
+        List<String> conditions = buildConditions(statement, params);
+
+        StringBuilder sql = new StringBuilder("DELETE FROM ").append(Config.DATABASE_PREFIX).append("_").append(namespace);
+        if (!conditions.isEmpty()) {
+            sql.append(" WHERE ").append(String.join(" AND ", conditions));
+        }
+
+        return executeUpdateSql(sql.toString(), params);
+    }
+
+    /**
+     * Executes a write statement and returns the number of affected rows.
+     *
+     * @param sql     the SQL to execute
+     * @param params  the parameters bound to the SQL, in order
+     * @return the number of affected rows
+     */
+    private long executeUpdateSql(String sql, List<QueryValue> params) {
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            bindParameters(statement, params);
+            return statement.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
      * Builds the SQL and parameters for a query, optionally as a {@code COUNT(*)}.
      *
      * @param namespace  the namespace to query
-     * @param statement  the query to render
+     * @param statement  the statement to render
      * @param countOnly  whether to render {@code SELECT COUNT(*)} without ordering or paging
      * @return the SQL and its parameters
      */
-    private BuiltQuery buildQuery(String namespace, QueryStatement statement, boolean countOnly) {
-        List<String> conditions = new ArrayList<>();
+    private BuiltQuery buildQuery(String namespace, ObjectStatement statement, boolean countOnly) {
         List<QueryValue> params = new ArrayList<>();
-        for (QueryStatement.Condition condition : statement.conditions()) {
-            String column = validateQueryColumn(condition.column());
+        List<String> conditions = buildConditions(statement, params);
+
+        StringBuilder sql = new StringBuilder(countOnly ? "SELECT COUNT(*)" : "SELECT " + selectColumns())
+                .append(" FROM ").append(Config.DATABASE_PREFIX).append("_").append(namespace);
+        if (!conditions.isEmpty()) {
+            sql.append(" WHERE ").append(String.join(" AND ", conditions));
+        }
+        if (!countOnly) {
+            if (!statement.orderBys().isEmpty()) {
+                List<String> orderBys = new ArrayList<>();
+                for (ObjectStatement.OrderBy orderBy : statement.orderBys()) {
+                    validateQueryColumn(orderBy.column());
+                    orderBys.add(orderBy.column() + " " + orderBy.direction());
+                }
+                sql.append(" ORDER BY ").append(String.join(", ", orderBys));
+            }
+            if (statement.limit() != null) {
+                sql.append(" LIMIT ?");
+                params.add(new QueryValue.IntValue(statement.limit()));
+            }
+            if (statement.offset() != null) {
+                sql.append(" OFFSET ?");
+                params.add(new QueryValue.IntValue(statement.offset()));
+            }
+        }
+        return new BuiltQuery(sql.toString(), params);
+    }
+
+    /**
+     * Renders the {@code WHERE} clause of the statement, validating each column and
+     * collecting its parameters.
+     *
+     * @param statement  the statement whose conditions should be rendered
+     * @param params     the list to append the condition parameters to
+     * @return the rendered condition clauses
+     */
+    private List<String> buildConditions(ObjectStatement statement, List<QueryValue> params) {
+        List<String> conditions = new ArrayList<>();
+        for (ObjectStatement.Condition condition : statement.conditions()) {
+            validateQueryColumn(condition.column());
+            String column = condition.column();
             List<QueryValue> values = condition.params();
             switch (condition.operator()) {
                 case "BETWEEN" -> {
@@ -355,30 +498,7 @@ public abstract class DatabaseManager {
                 }
             }
         }
-
-        StringBuilder sql = new StringBuilder(countOnly ? "SELECT COUNT(*)" : "SELECT " + selectColumns())
-                .append(" FROM ").append(Config.DATABASE_PREFIX).append("_").append(namespace);
-        if (!conditions.isEmpty()) {
-            sql.append(" WHERE ").append(String.join(" AND ", conditions));
-        }
-        if (!countOnly) {
-            if (!statement.orderBys().isEmpty()) {
-                List<String> orderBys = new ArrayList<>();
-                for (QueryStatement.OrderBy orderBy : statement.orderBys()) {
-                    orderBys.add(validateQueryColumn(orderBy.column()) + " " + orderBy.direction());
-                }
-                sql.append(" ORDER BY ").append(String.join(", ", orderBys));
-            }
-            if (statement.limit() != null) {
-                sql.append(" LIMIT ?");
-                params.add(new QueryValue.IntValue(statement.limit()));
-            }
-            if (statement.offset() != null) {
-                sql.append(" OFFSET ?");
-                params.add(new QueryValue.IntValue(statement.offset()));
-            }
-        }
-        return new BuiltQuery(sql.toString(), params);
+        return conditions;
     }
 
     /**
@@ -409,14 +529,27 @@ public abstract class DatabaseManager {
      * Ensures the given column is a known key or metadata column.
      *
      * @param column  the column name to validate
-     * @return the validated column name
      * @throws IllegalArgumentException if the column is unknown
      */
-    private String validateQueryColumn(String column) {
-        if (column.equals("key") || additionalKeyColumnNames.contains(column) || metadataColumnNames.contains(column)) {
-            return column;
+    private void validateQueryColumn(String column) {
+        if (!column.equals("key") && !additionalKeyColumnNames.contains(column) && !metadataColumnNames.contains(column)) {
+            throw new IllegalArgumentException("Unknown column: \"" + column + "\"");
         }
-        throw new IllegalArgumentException("Unknown column: \"" + column + "\"");
+    }
+
+    /**
+     * Ensures the given column is a metadata column that can be assigned in an update.
+     *
+     * <p>Key and additional key columns are excluded so that addressing and storage
+     * integrity cannot be broken.</p>
+     *
+     * @param column  the column name to validate
+     * @throws IllegalArgumentException if the column is not updatable
+     */
+    private void validateUpdateColumn(String column) {
+        if (!metadataColumnNames.contains(column)) {
+            throw new IllegalArgumentException("Column is not updatable: \"" + column + "\"");
+        }
     }
 
     /**

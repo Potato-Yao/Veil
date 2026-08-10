@@ -28,9 +28,10 @@ public class Main {
         ObjectManager avatarManager = ObjectManager.build("avatar", databaseManager);
 
         // 4. Store objects; each file lands at ./avatar/<key>_<user_id> and a metadata
-        //    row is inserted into the veil_metadata_avatar table.
+        //    row is inserted into the veil_metadata_avatar table. update() replaces an
+        //    existing object, preserving its access statistics.
         byte[] data = "hello veil!".getBytes(StandardCharsets.UTF_8);
-        avatarManager.overwritePut("user123", "avatar.png", new ByteArrayInputStream(data), Map.of("user_id", "u1"));
+        avatarManager.update("user123", "avatar.png", new ByteArrayInputStream(data), Map.of("user_id", "u1"));
         avatarManager.put("user456", "banner.png",
                 new ByteArrayInputStream("a longer banner image".getBytes(StandardCharsets.UTF_8)),
                 Map.of("user_id", "u1"));
@@ -46,10 +47,11 @@ public class Main {
         }
 
         // 6. Query the namespace with range and condition filters, ordered by size.
-        QueryStatement statement = QueryStatement.builder()
-                .where("file_extension", QueryStatement.Op.EQ, "png")
+        //    The same ObjectStatement type also drives updates and batch deletes.
+        ObjectStatement statement = ObjectStatement.builder()
+                .where("file_extension", ObjectStatement.Op.EQ, "png")
                 .between("file_size", 1L, 100L)
-                .orderBy("file_size", QueryStatement.Direction.DESC)
+                .orderBy("file_size", ObjectStatement.Direction.DESC)
                 .build();
         List<ObjectReference> matches = avatarManager.query(statement);
         System.out.println("PNG files between 1 and 100 bytes: " + matches.size());
@@ -66,10 +68,17 @@ public class Main {
             }
         }
 
-        // 8. Check existence and remove an object.
+        // 8. Partially update metadata without rewriting the file content.
+        avatarManager.updateMetadata("user123", Map.of("user_id", "u1"),
+                ObjectStatement.builder().set("file_name", "avatar-v2.png").build());
+
+        // 9. Check existence and remove an object.
         System.out.println("Exists before remove: " + avatarManager.checkExist("user123", Map.of("user_id", "u1")));
         avatarManager.remove("user123", Map.of("user_id", "u1"));
         System.out.println("Exists after remove: " + avatarManager.checkExist("user123", Map.of("user_id", "u1")));
+
+        // 10. Batch-remove every remaining object in the namespace.
+        System.out.println("Removed " + avatarManager.removeAll(ObjectStatement.builder().build()) + " remaining object(s)");
     }
 }
 ```

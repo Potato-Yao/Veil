@@ -5,22 +5,32 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * A database-agnostic query over object metadata.
+ * A database-agnostic statement over object metadata.
  *
- * <p>Conditions are AND-combined and may reference the key column, additional key
- * columns, or any metadata column. Column names are validated by the executing
- * {@link DatabaseManager}, which owns the set of known columns.</p>
+ * <p>Describes <em>which rows</em> (via {@link Condition}s) and optionally <em>what
+ * to change</em> (via {@link Assignment}s). The operation performed is chosen by the
+ * {@link DatabaseManager} method it is passed to:
+ * {@link DatabaseManager#query(String, ObjectStatement)},
+ * {@link DatabaseManager#count(String, ObjectStatement)},
+ * {@link DatabaseManager#executeUpdate(String, ObjectStatement)} or
+ * {@link DatabaseManager#executeDelete(String, ObjectStatement)}.</p>
+ *
+ * <p>Conditions may reference the key column, additional key columns, or any metadata
+ * column; column names are validated by the executing {@link DatabaseManager}.</p>
  *
  * <p>Instances are created with {@link #builder()}.</p>
  */
-public class QueryStatement {
+public class ObjectStatement {
     private final List<Condition> conditions;
+    private final List<Assignment> assignments;
     private final List<OrderBy> orderBys;
     private final Integer limit;
     private final Integer offset;
 
-    private QueryStatement(List<Condition> conditions, List<OrderBy> orderBys, Integer limit, Integer offset) {
+    private ObjectStatement(List<Condition> conditions, List<Assignment> assignments,
+                            List<OrderBy> orderBys, Integer limit, Integer offset) {
         this.conditions = List.copyOf(conditions);
+        this.assignments = List.copyOf(assignments);
         this.orderBys = List.copyOf(orderBys);
         this.limit = limit;
         this.offset = offset;
@@ -69,6 +79,66 @@ public class QueryStatement {
     }
 
     /**
+     * The operation a statement is intended for, used to validate that its contents
+     * fit that operation via {@link #validateFor(Operation)}.
+     */
+    public enum Operation {
+        /**
+         * A read ({@link DatabaseManager#query(String, ObjectStatement)} or
+         * {@link DatabaseManager#count(String, ObjectStatement)}).
+         */
+        QUERY,
+        /**
+         * An update of one or more rows
+         * ({@link DatabaseManager#executeUpdate(String, ObjectStatement)}).
+         */
+        UPDATE,
+        /**
+         * An update of a single row targeted by primary key
+         * ({@link ObjectManager#updateMetadata}).
+         */
+        UPDATE_BY_KEY,
+        /**
+         * A deletion ({@link DatabaseManager#executeDelete(String, ObjectStatement)}).
+         */
+        DELETE
+    }
+
+    /**
+     * Validates that this statement's contents fit the given operation.
+     *
+     * @param operation  the intended operation
+     * @throws IllegalArgumentException if the statement does not fit the operation
+     */
+    public void validateFor(Operation operation) {
+        switch (operation) {
+            case QUERY -> {
+                if (!assignments.isEmpty()) {
+                    throw new IllegalArgumentException("query does not accept assignments");
+                }
+            }
+            case UPDATE -> {
+                if (assignments.isEmpty()) {
+                    throw new IllegalArgumentException("update must set at least one column");
+                }
+            }
+            case UPDATE_BY_KEY -> {
+                if (assignments.isEmpty()) {
+                    throw new IllegalArgumentException("update must set at least one column");
+                }
+                if (!conditions.isEmpty()) {
+                    throw new IllegalArgumentException("update by key does not accept conditions");
+                }
+            }
+            case DELETE -> {
+                if (!assignments.isEmpty()) {
+                    throw new IllegalArgumentException("delete does not accept assignments");
+                }
+            }
+        }
+    }
+
+    /**
      * A single filter, normalized to a column, an SQL operator and the bound parameters.
      *
      * @param column   the column name
@@ -76,6 +146,15 @@ public class QueryStatement {
      * @param params   the values bound to the statement, in order
      */
     public record Condition(String column, String operator, List<QueryValue> params) {
+    }
+
+    /**
+     * A single value assignment for an {@code UPDATE}.
+     *
+     * @param column  the column to set
+     * @param value   the value to assign
+     */
+    public record Assignment(String column, QueryValue value) {
     }
 
     /**
@@ -92,6 +171,13 @@ public class QueryStatement {
      */
     public List<Condition> conditions() {
         return conditions;
+    }
+
+    /**
+     * @return the value assignments, applied as the {@code SET} clause at execution time
+     */
+    public List<Assignment> assignments() {
+        return assignments;
     }
 
     /**
@@ -116,7 +202,7 @@ public class QueryStatement {
     }
 
     /**
-     * Starts building a {@link QueryStatement}.
+     * Starts building an {@link ObjectStatement}.
      *
      * @return a new {@link Builder}
      */
@@ -125,12 +211,13 @@ public class QueryStatement {
     }
 
     /**
-     * Builder for constructing a {@link QueryStatement}.
+     * Builder for constructing an {@link ObjectStatement}.
      *
      * <p>All conditions are AND-combined. An {@code offset} requires a {@code limit}.</p>
      */
     public static class Builder {
         private final List<Condition> conditions = new ArrayList<>();
+        private final List<Assignment> assignments = new ArrayList<>();
         private final List<OrderBy> orderBys = new ArrayList<>();
         private Integer limit;
         private Integer offset;
@@ -244,6 +331,39 @@ public class QueryStatement {
         }
 
         /**
+         * Adds a {@code long} assignment ({@code column = value}) for an update.
+         *
+         * @param column  the column to set
+         * @param value   the value to assign
+         * @return this builder
+         */
+        public Builder set(String column, long value) {
+            return addAssignment(column, new QueryValue.LongValue(value));
+        }
+
+        /**
+         * Adds an {@code int} assignment ({@code column = value}) for an update.
+         *
+         * @param column  the column to set
+         * @param value   the value to assign
+         * @return this builder
+         */
+        public Builder set(String column, int value) {
+            return addAssignment(column, new QueryValue.IntValue(value));
+        }
+
+        /**
+         * Adds a {@code String} assignment ({@code column = value}) for an update.
+         *
+         * @param column  the column to set
+         * @param value   the value to assign
+         * @return this builder
+         */
+        public Builder set(String column, String value) {
+            return addAssignment(column, new QueryValue.StringValue(value));
+        }
+
+        /**
          * Adds a sort directive. Multiple directives are applied in order.
          *
          * @param column    the column to sort by
@@ -289,16 +409,18 @@ public class QueryStatement {
         }
 
         /**
-         * Builds the configured {@link QueryStatement}.
+         * Builds the configured {@link ObjectStatement}.
          *
-         * @return a new {@link QueryStatement}
+         * <p>An empty statement is valid and matches every row of a namespace.</p>
+         *
+         * @return a new {@link ObjectStatement}
          * @throws IllegalStateException if an {@code offset} is set without a {@code limit}
          */
-        public QueryStatement build() {
+        public ObjectStatement build() {
             if (offset != null && limit == null) {
                 throw new IllegalStateException("offset requires a limit");
             }
-            return new QueryStatement(conditions, orderBys, limit, offset);
+            return new ObjectStatement(conditions, assignments, orderBys, limit, offset);
         }
 
         private Builder addCondition(String column, Op op, QueryValue... params) {
@@ -315,6 +437,11 @@ public class QueryStatement {
                 throw new IllegalArgumentException("IN requires at least one value");
             }
             conditions.add(new Condition(column, "IN", params));
+            return this;
+        }
+
+        private Builder addAssignment(String column, QueryValue value) {
+            assignments.add(new Assignment(column, value));
             return this;
         }
     }
