@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -25,13 +26,14 @@ class ObjectManagerTest {
     static Path tempDir;
 
     static ObjectManager objectManager;
+    static DatabaseManager databaseManager;
     static SQLiteDataSource dataSource;
 
     @BeforeAll
     static void setUp() {
         dataSource = new SQLiteDataSource();
         dataSource.setUrl("jdbc:sqlite:" + tempDir.resolve("test.db"));
-        DatabaseManager databaseManager = DatabaseManager.builder()
+        databaseManager = DatabaseManager.builder()
                 .dataSource(dataSource)
                 .keyColumn("user_id", KeyType.TEXT)
                 .build();
@@ -246,5 +248,80 @@ class ObjectManagerTest {
             assertEquals(1, resultSet.getLong("access_count"));
             assertFalse(resultSet.next());
         }
+    }
+
+    @Test
+    void queryEndToEnd() throws Exception {
+        ObjectManager queryManager = ObjectManager.build("query", databaseManager);
+        queryManager.put("qA", "a.png", new ByteArrayInputStream("hello".getBytes()), Map.of("user_id", "uA"));
+        queryManager.put("qB", "b.jpg", new ByteArrayInputStream("abcdefghijklmno".getBytes()), Map.of("user_id", "uB"));
+        queryManager.put("qC", "c.png", new ByteArrayInputStream("12345678".getBytes()), Map.of("user_id", "uC"));
+
+        List<ObjectReference> png = databaseManager.query("query",
+                QueryStatement.builder().where("file_extension", QueryStatement.Op.EQ, "png").build());
+        assertEquals(List.of("qA", "qC"), png.stream().map(ObjectReference::key).toList());
+
+        List<ObjectReference> like = databaseManager.query("query",
+                QueryStatement.builder().where("file_extension", QueryStatement.Op.LIKE, "p%").build());
+        assertEquals(List.of("qA", "qC"), like.stream().map(ObjectReference::key).toList());
+
+        List<ObjectReference> range = databaseManager.query("query",
+                QueryStatement.builder().between("file_size", 6L, 16L).build());
+        assertEquals(List.of("qB", "qC"), range.stream().map(ObjectReference::key).toList());
+
+        List<ObjectReference> ordered = databaseManager.query("query",
+                QueryStatement.builder().orderBy("file_size", QueryStatement.Direction.DESC).build());
+        assertEquals(List.of("qB", "qC", "qA"), ordered.stream().map(ObjectReference::key).toList());
+
+        List<ObjectReference> page = databaseManager.query("query",
+                QueryStatement.builder().orderBy("file_size", QueryStatement.Direction.ASC).limit(2).offset(1).build());
+        assertEquals(List.of("qC", "qB"), page.stream().map(ObjectReference::key).toList());
+
+        List<ObjectReference> byUser = databaseManager.query("query",
+                QueryStatement.builder().where("user_id", QueryStatement.Op.EQ, "uB").build());
+        assertEquals(List.of("qB"), byUser.stream().map(ObjectReference::key).toList());
+
+        assertEquals(3, databaseManager.count("query", QueryStatement.builder().build()));
+        assertEquals(2, databaseManager.count("query",
+                QueryStatement.builder().between("file_size", 6L, 16L).build()));
+
+        assertThrows(IllegalArgumentException.class, () -> databaseManager.query("query",
+                QueryStatement.builder().where("unknown_column", QueryStatement.Op.EQ, "x").build()));
+    }
+
+    @Test
+    void queryResultIsAddressable() throws Exception {
+        ObjectManager queryManager = ObjectManager.build("query_addressable", databaseManager);
+        queryManager.put("addr1", "doc.txt", new ByteArrayInputStream("addressable".getBytes()), Map.of("user_id", "uX"));
+
+        ObjectReference reference = databaseManager.query("query_addressable", QueryStatement.builder().build()).get(0);
+        assertEquals("addr1", reference.key());
+        assertEquals(Map.of("user_id", "uX"), reference.additionKeys());
+        assertEquals("doc.txt", reference.metadata().fileName());
+
+        try (ObjectData object = queryManager.get(reference.key(), reference.additionKeys())) {
+            assertArrayEquals("addressable".getBytes(), object.stream().readAllBytes());
+        }
+    }
+
+    @Test
+    void queryStatementRejectsInvalidConfigurations() {
+        assertThrows(IllegalStateException.class, () ->
+                QueryStatement.builder().offset(1).build());
+        assertThrows(IllegalArgumentException.class, () ->
+                QueryStatement.builder().inLongs("file_size", List.<Long>of()).build());
+        assertThrows(IllegalArgumentException.class, () ->
+                QueryStatement.builder().limit(-1).build());
+    }
+
+    @Test
+    void queryWithIntValuesWorks() throws Exception {
+        ObjectManager queryManager = ObjectManager.build("query_ints", databaseManager);
+        queryManager.put("iA", "a.txt", new ByteArrayInputStream("12345".getBytes()), Map.of("user_id", "uI"));
+        queryManager.put("iB", "b.txt", new ByteArrayInputStream("123456789".getBytes()), Map.of("user_id", "uI"));
+
+        List<ObjectReference> results = databaseManager.query("query_ints",
+                QueryStatement.builder().where("file_size", QueryStatement.Op.GT, 5).build());
+        assertEquals(List.of("iB"), results.stream().map(ObjectReference::key).toList());
     }
 }

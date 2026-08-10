@@ -8,6 +8,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -150,6 +151,29 @@ public class ObjectManager {
     public boolean checkExist(String primaryKey, Map<String, String> additionKey) {
         validateAdditionKeys(additionKey);
         return databaseManager.getStorageLocation(namespace, primaryKey) != null;
+    }
+
+    /**
+     * Runs a query over the metadata of this namespace.
+     *
+     * @param statement  the query to run
+     * @return the matching objects as {@link ObjectReference}s, ordered and limited as
+     *         specified by {@code statement}
+     * @throws IllegalArgumentException if {@code statement} references an unknown column
+     */
+    public List<ObjectReference> query(QueryStatement statement) {
+        return databaseManager.query(namespace, statement);
+    }
+
+    /**
+     * Counts the objects in this namespace matching the given query's conditions.
+     *
+     * @param statement  the query whose conditions should be applied
+     * @return the number of matching objects
+     * @throws IllegalArgumentException if {@code statement} references an unknown column
+     */
+    public long count(QueryStatement statement) {
+        return databaseManager.count(namespace, statement);
     }
 
     /**

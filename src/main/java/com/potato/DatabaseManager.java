@@ -30,6 +30,7 @@ public abstract class DatabaseManager {
     protected final ArrayList<String> keyColumns;
     protected final ArrayList<String> additionalKeyColumnNames;
     protected final ArrayList<String> metadataColumns;
+    protected final ArrayList<String> metadataColumnNames;
 
     public DatabaseManager(DataSource dataSource, HashMap<String, KeyType> keyColumns) {
         this.dataSource = dataSource;
@@ -46,15 +47,27 @@ public abstract class DatabaseManager {
         }
 
         this.metadataColumns = new ArrayList<>();
-        this.metadataColumns.add("file_name TEXT NOT NULL");
-        this.metadataColumns.add("file_extension TEXT NOT NULL");
-        this.metadataColumns.add("file_size BIGINT NOT NULL");
-        this.metadataColumns.add("md5 TEXT NOT NULL");
-        this.metadataColumns.add("created_at TEXT NOT NULL");
-        this.metadataColumns.add("last_accessed_at TEXT");
-        this.metadataColumns.add("storage_type TEXT NOT NULL");
-        this.metadataColumns.add("storage_location TEXT NOT NULL");
-        this.metadataColumns.add("access_count INTEGER NOT NULL DEFAULT 0");
+        this.metadataColumnNames = new ArrayList<>();
+        addMetadataColumn("file_name", "TEXT NOT NULL");
+        addMetadataColumn("file_extension", "TEXT NOT NULL");
+        addMetadataColumn("file_size", "BIGINT NOT NULL");
+        addMetadataColumn("md5", "TEXT NOT NULL");
+        addMetadataColumn("created_at", "TEXT NOT NULL");
+        addMetadataColumn("last_accessed_at", "TEXT");
+        addMetadataColumn("storage_type", "TEXT NOT NULL");
+        addMetadataColumn("storage_location", "TEXT NOT NULL");
+        addMetadataColumn("access_count", "INTEGER NOT NULL DEFAULT 0");
+    }
+
+    /**
+     * Registers a metadata column and its plain name.
+     *
+     * @param name  the column name
+     * @param type  the column type and constraints
+     */
+    private void addMetadataColumn(String name, String type) {
+        metadataColumns.add(name + " " + type);
+        metadataColumnNames.add(name);
     }
 
     protected Connection getConnection() throws SQLException {
@@ -242,6 +255,180 @@ public abstract class DatabaseManager {
     }
 
     /**
+     * Runs a query over the metadata of a namespace.
+     *
+     * <p>Conditions reference the key column, additional key columns, or metadata
+     * columns; every referenced column is validated before the statement is built.</p>
+     *
+     * @param namespace  the namespace to query
+     * @param statement  the query to run
+     * @return the matching objects, ordered and limited as specified by {@code statement}
+     * @throws IllegalArgumentException if {@code statement} references an unknown column
+     */
+    public List<ObjectReference> query(String namespace, QueryStatement statement) {
+        BuiltQuery builtQuery = buildQuery(namespace, statement, false);
+
+        List<ObjectReference> results = new ArrayList<>();
+        try (Connection connection = getConnection();
+             PreparedStatement preparedStatement = connection.prepareStatement(builtQuery.sql())) {
+            bindParameters(preparedStatement, builtQuery.params());
+            try (ResultSet resultSet = preparedStatement.executeQuery()) {
+                while (resultSet.next()) {
+                    String key = resultSet.getString("key");
+                    Map<String, String> additionKeys = new HashMap<>();
+                    for (String column : additionalKeyColumnNames) {
+                        String value = resultSet.getString(column);
+                        if (value != null) {
+                            additionKeys.put(column, value);
+                        }
+                    }
+                    ObjectMetadata metadata = new ObjectMetadata(
+                            resultSet.getString("file_name"),
+                            resultSet.getString("file_extension"),
+                            resultSet.getLong("file_size"),
+                            resultSet.getString("md5"),
+                            resultSet.getString("created_at"),
+                            resultSet.getString("last_accessed_at"),
+                            resultSet.getString("storage_type"),
+                            resultSet.getString("storage_location"),
+                            resultSet.getLong("access_count"));
+                    results.add(new ObjectReference(key, additionKeys, metadata));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return results;
+    }
+
+    /**
+     * Counts the objects in a namespace matching the given query's conditions.
+     *
+     * <p>Ordering, limit and offset are ignored.</p>
+     *
+     * @param namespace  the namespace to query
+     * @param statement  the query whose conditions should be applied
+     * @return the number of matching objects
+     * @throws IllegalArgumentException if {@code statement} references an unknown column
+     */
+    public long count(String namespace, QueryStatement statement) {
+        BuiltQuery builtQuery = buildQuery(namespace, statement, true);
+
+        try (Connection connection = getConnection();
+             PreparedStatement preparedStatement = connection.prepareStatement(builtQuery.sql())) {
+            bindParameters(preparedStatement, builtQuery.params());
+            try (ResultSet resultSet = preparedStatement.executeQuery()) {
+                return resultSet.next() ? resultSet.getLong(1) : 0;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Builds the SQL and parameters for a query, optionally as a {@code COUNT(*)}.
+     *
+     * @param namespace  the namespace to query
+     * @param statement  the query to render
+     * @param countOnly  whether to render {@code SELECT COUNT(*)} without ordering or paging
+     * @return the SQL and its parameters
+     */
+    private BuiltQuery buildQuery(String namespace, QueryStatement statement, boolean countOnly) {
+        List<String> conditions = new ArrayList<>();
+        List<QueryValue> params = new ArrayList<>();
+        for (QueryStatement.Condition condition : statement.conditions()) {
+            String column = validateQueryColumn(condition.column());
+            List<QueryValue> values = condition.params();
+            switch (condition.operator()) {
+                case "BETWEEN" -> {
+                    conditions.add(column + " BETWEEN ? AND ?");
+                    params.add(values.get(0));
+                    params.add(values.get(1));
+                }
+                case "IN" -> {
+                    conditions.add(column + " IN (" + String.join(", ", Collections.nCopies(values.size(), "?")) + ")");
+                    params.addAll(values);
+                }
+                default -> {
+                    conditions.add(column + " " + condition.operator() + " ?");
+                    params.add(values.get(0));
+                }
+            }
+        }
+
+        StringBuilder sql = new StringBuilder(countOnly ? "SELECT COUNT(*)" : "SELECT " + selectColumns())
+                .append(" FROM ").append(Config.DATABASE_PREFIX).append("_").append(namespace);
+        if (!conditions.isEmpty()) {
+            sql.append(" WHERE ").append(String.join(" AND ", conditions));
+        }
+        if (!countOnly) {
+            if (!statement.orderBys().isEmpty()) {
+                List<String> orderBys = new ArrayList<>();
+                for (QueryStatement.OrderBy orderBy : statement.orderBys()) {
+                    orderBys.add(validateQueryColumn(orderBy.column()) + " " + orderBy.direction());
+                }
+                sql.append(" ORDER BY ").append(String.join(", ", orderBys));
+            }
+            if (statement.limit() != null) {
+                sql.append(" LIMIT ?");
+                params.add(new QueryValue.IntValue(statement.limit()));
+            }
+            if (statement.offset() != null) {
+                sql.append(" OFFSET ?");
+                params.add(new QueryValue.IntValue(statement.offset()));
+            }
+        }
+        return new BuiltQuery(sql.toString(), params);
+    }
+
+    /**
+     * @return the comma-separated columns selected for a full query row
+     */
+    private String selectColumns() {
+        List<String> columns = new ArrayList<>();
+        columns.add("key");
+        columns.addAll(additionalKeyColumnNames);
+        columns.addAll(metadataColumnNames);
+        return String.join(", ", columns);
+    }
+
+    /**
+     * Binds the given parameters onto a prepared statement, in order.
+     *
+     * @param preparedStatement the statement to bind onto
+     * @param params            the values to bind
+     * @throws SQLException if a parameter cannot be bound
+     */
+    private void bindParameters(PreparedStatement preparedStatement, List<QueryValue> params) throws SQLException {
+        for (int i = 0; i < params.size(); i++) {
+            params.get(i).bind(preparedStatement, i + 1);
+        }
+    }
+
+    /**
+     * Ensures the given column is a known key or metadata column.
+     *
+     * @param column  the column name to validate
+     * @return the validated column name
+     * @throws IllegalArgumentException if the column is unknown
+     */
+    private String validateQueryColumn(String column) {
+        if (column.equals("key") || additionalKeyColumnNames.contains(column) || metadataColumnNames.contains(column)) {
+            return column;
+        }
+        throw new IllegalArgumentException("Unknown column: \"" + column + "\"");
+    }
+
+    /**
+     * A rendered query: its SQL and the parameters bound to it, in order.
+     *
+     * @param sql     the SQL statement
+     * @param params  the parameters bound to the SQL, in order
+     */
+    private record BuiltQuery(String sql, List<QueryValue> params) {
+    }
+
+    /**
      * Builds and executes the INSERT (or UPSERT) statement for an object's metadata.
      *
      * <p>Dynamically assembles the column list from the additional key columns and the
@@ -266,9 +453,9 @@ public abstract class DatabaseManager {
                                String createdAt, String storageType, String storageLocation,
                                boolean overwrite) {
         List<String> columns = new ArrayList<>();
-        List<Object> values = new ArrayList<>();
+        List<QueryValue> values = new ArrayList<>();
         columns.add("key");
-        values.add(key);
+        values.add(new QueryValue.StringValue(key));
 
         if (additionKeys != null) {
             for (Map.Entry<String, String> entry : additionKeys.entrySet()) {
@@ -276,24 +463,24 @@ public abstract class DatabaseManager {
                     throw new IllegalArgumentException("Unknown key column: \"" + entry.getKey() + "\"");
                 }
                 columns.add(entry.getKey());
-                values.add(entry.getValue());
+                values.add(new QueryValue.StringValue(entry.getValue()));
             }
         }
 
         columns.add("file_name");
-        values.add(fileName);
+        values.add(new QueryValue.StringValue(fileName));
         columns.add("file_extension");
-        values.add(extension);
+        values.add(new QueryValue.StringValue(extension));
         columns.add("file_size");
-        values.add(size);
+        values.add(new QueryValue.LongValue(size));
         columns.add("md5");
-        values.add(md5);
+        values.add(new QueryValue.StringValue(md5));
         columns.add("created_at");
-        values.add(createdAt);
+        values.add(new QueryValue.StringValue(createdAt));
         columns.add("storage_type");
-        values.add(storageType);
+        values.add(new QueryValue.StringValue(storageType));
         columns.add("storage_location");
-        values.add(storageLocation);
+        values.add(new QueryValue.StringValue(storageLocation));
 
         String placeholders = String.join(", ", Collections.nCopies(columns.size(), "?"));
         StringBuilder sql = new StringBuilder("INSERT INTO ").append(Config.DATABASE_PREFIX).append("_").append(namespace)
@@ -310,12 +497,7 @@ public abstract class DatabaseManager {
         try (Connection connection = getConnection();
              PreparedStatement statement = connection.prepareStatement(sql.toString())) {
             for (int i = 0; i < values.size(); i++) {
-                Object value = values.get(i);
-                if (value instanceof Long) {
-                    statement.setLong(i + 1, (Long) value);
-                } else {
-                    statement.setString(i + 1, String.valueOf(value));
-                }
+                values.get(i).bind(statement, i + 1);
             }
             statement.executeUpdate();
         } catch (SQLException e) {
