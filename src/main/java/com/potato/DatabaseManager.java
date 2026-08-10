@@ -6,6 +6,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -53,6 +54,7 @@ public abstract class DatabaseManager {
         this.metadataColumns.add("last_accessed_at TEXT");
         this.metadataColumns.add("storage_type TEXT NOT NULL");
         this.metadataColumns.add("storage_location TEXT NOT NULL");
+        this.metadataColumns.add("access_count INTEGER NOT NULL DEFAULT 0");
     }
 
     protected Connection getConnection() throws SQLException {
@@ -176,7 +178,7 @@ public abstract class DatabaseManager {
      */
     public ObjectMetadata getMetadata(String namespace, String key) {
         String sql = "SELECT file_name, file_extension, file_size, md5, created_at, last_accessed_at,"
-                + " storage_type, storage_location FROM " + Config.DATABASE_PREFIX + "_" + namespace
+                + " storage_type, storage_location, access_count FROM " + Config.DATABASE_PREFIX + "_" + namespace
                 + " WHERE key = ?";
         try (Connection connection = getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -193,7 +195,8 @@ public abstract class DatabaseManager {
                         resultSet.getString("created_at"),
                         resultSet.getString("last_accessed_at"),
                         resultSet.getString("storage_type"),
-                        resultSet.getString("storage_location"));
+                        resultSet.getString("storage_location"),
+                        resultSet.getLong("access_count"));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -213,6 +216,26 @@ public abstract class DatabaseManager {
              PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, key);
             return statement.executeUpdate() > 0;
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Records access to the object with the given key, updating its last access
+     * timestamp and incrementing its access count.
+     *
+     * @param namespace  the namespace of the object
+     * @param key        the primary key of the object
+     */
+    public void updateAccess(String namespace, String key) {
+        String sql = "UPDATE " + Config.DATABASE_PREFIX + "_" + namespace
+                + " SET last_accessed_at = ?, access_count = access_count + 1 WHERE key = ?";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, Instant.now().toString());
+            statement.setString(2, key);
+            statement.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }

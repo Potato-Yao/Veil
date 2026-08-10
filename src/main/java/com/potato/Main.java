@@ -26,8 +26,8 @@ public class Main {
             throw new RuntimeException(e);
         }
 
-        System.out.println("Exists before remove: " + avatarManager.checkExist("user123", Map.of("user_id", "u1")));
-        avatarManager.remove("user123", Map.of("user_id", "u1"));
-        System.out.println("Exists after remove: " + avatarManager.checkExist("user123", Map.of("user_id", "u1")));
+//        System.out.println("Exists before remove: " + avatarManager.checkExist("user123", Map.of("user_id", "u1")));
+//        avatarManager.remove("user123", Map.of("user_id", "u1"));
+//        System.out.println("Exists after remove: " + avatarManager.checkExist("user123", Map.of("user_id", "u1")));
     }
 }

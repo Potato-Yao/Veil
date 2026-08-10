@@ -114,6 +114,7 @@ public class ObjectManager {
         if (metadata == null) {
             throw new IllegalArgumentException("Object \"" + primaryKey + "\" does not exist in namespace \"" + namespace + "\"");
         }
+        databaseManager.updateAccess(namespace, primaryKey);
         InputStream stream = mainStorageManager.read(buildLocation(primaryKey, additionKey));
         return new ObjectData(metadata, stream);
     }

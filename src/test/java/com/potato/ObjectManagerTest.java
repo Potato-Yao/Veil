@@ -16,6 +16,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -190,5 +191,60 @@ class ObjectManagerTest {
         assertTrue(objectManager.checkExist(primaryKey, Map.of("user_id", "u7")));
         objectManager.remove(primaryKey, Map.of("user_id", "u7"));
         assertFalse(objectManager.checkExist(primaryKey, Map.of("user_id", "u7")));
+    }
+
+    @Test
+    void getUpdatesAccessCountAndLastAccessedAt() throws Exception {
+        String primaryKey = "obj8";
+
+        objectManager.put(primaryKey, "track.txt", new ByteArrayInputStream("track me".getBytes()), Map.of("user_id", "u8"));
+        try (ObjectData ignored = objectManager.get(primaryKey, Map.of("user_id", "u8"))) {
+        }
+        try (ObjectData ignored = objectManager.get(primaryKey, Map.of("user_id", "u8"))) {
+        }
+
+        try (var connection = dataSource.getConnection();
+             var statement = connection.prepareStatement(
+                     "SELECT access_count, last_accessed_at FROM veil_metadata_objects WHERE key = ?")) {
+            statement.setString(1, primaryKey);
+            var resultSet = statement.executeQuery();
+            assertTrue(resultSet.next());
+            assertEquals(2, resultSet.getLong("access_count"));
+            assertNotNull(resultSet.getString("last_accessed_at"));
+        }
+    }
+
+    @Test
+    void getReturnsMetadataWithAccessCount() throws Exception {
+        String primaryKey = "obj10";
+
+        objectManager.put(primaryKey, "count.txt", new ByteArrayInputStream("count".getBytes()), Map.of("user_id", "u10"));
+        try (ObjectData object = objectManager.get(primaryKey, Map.of("user_id", "u10"))) {
+            assertEquals(0, object.metadata().accessCount());
+        }
+        try (ObjectData object = objectManager.get(primaryKey, Map.of("user_id", "u10"))) {
+            assertEquals(1, object.metadata().accessCount());
+        }
+    }
+
+    @Test
+    void overwritePutPreservesAccessState() throws Exception {
+        String primaryKey = "obj9";
+        String fileName = "doc.txt";
+
+        objectManager.put(primaryKey, fileName, new ByteArrayInputStream("original".getBytes()), Map.of("user_id", "u9"));
+        try (ObjectData ignored = objectManager.get(primaryKey, Map.of("user_id", "u9"))) {
+        }
+        objectManager.overwritePut(primaryKey, fileName, new ByteArrayInputStream("new version".getBytes()), Map.of("user_id", "u9"));
+
+        try (var connection = dataSource.getConnection();
+             var statement = connection.prepareStatement(
+                     "SELECT access_count FROM veil_metadata_objects WHERE key = ?")) {
+            statement.setString(1, primaryKey);
+            var resultSet = statement.executeQuery();
+            assertTrue(resultSet.next());
+            assertEquals(1, resultSet.getLong("access_count"));
+            assertFalse(resultSet.next());
+        }
     }
 }

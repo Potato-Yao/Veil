@@ -11,6 +11,7 @@ package com.potato;
  * @param lastAccessedAt   ISO-8601 timestamp of last access, or {@code null}
  * @param storageType      the type of storage (e.g. {@code "DISK"})
  * @param storageLocation  the location of the file within the file manager
+ * @param accessCount      the number of times the object has been accessed
  */
 public record ObjectMetadata(
         String fileName,
@@ -20,5 +21,6 @@ public record ObjectMetadata(
         String createdAt,
         String lastAccessedAt,
         String storageType,
-        String storageLocation) {
+        String storageLocation,
+        long accessCount) {
 }
