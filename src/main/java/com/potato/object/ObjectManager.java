@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Manages objects (files) within a single namespace.
@@ -126,7 +127,10 @@ public class ObjectManager {
     }
 
     /**
-     * Removes a stored object, deleting both its file and its metadata row.
+     * Removes a stored object, deleting both its metadata row and its file.
+     *
+     * <p>The metadata row is deleted first; if deleting the file then fails, only a
+     * stray file remains, never a metadata row pointing at a missing file.</p>
      *
      * @param statement the statement carrying the primary key (and additional key values)
      * @return {@code true} once the object has been removed
@@ -139,8 +143,8 @@ public class ObjectManager {
         if (location == null) {
             throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
         }
-        mainStorageManager.delete(location);
         databaseManager.delete(namespace, statement.key());
+        mainStorageManager.delete(location);
         return true;
     }
 
@@ -202,8 +206,12 @@ public class ObjectManager {
     }
 
     /**
-     * Removes every object matching the given statement, deleting both the files and
-     * their metadata rows.
+     * Removes every object matching the given statement, deleting both the metadata
+     * rows and their files.
+     *
+     * <p>The metadata rows are deleted first; if deleting a file then fails, only a
+     * stray file remains, never a metadata row pointing at a missing file. Remaining
+     * files are still cleaned up before the failure is reported.</p>
      *
      * <p>An empty statement removes every object in the namespace.</p>
      *
@@ -213,21 +221,33 @@ public class ObjectManager {
      */
     public long removeAll(ObjectStatement statement) {
         List<ObjectReference> references = databaseManager.query(namespace, statement);
+        long removed = databaseManager.executeDelete(namespace, statement);
+        RuntimeException failure = null;
         for (ObjectReference reference : references) {
-            mainStorageManager.delete(reference.metadata().storageLocation());
+            try {
+                mainStorageManager.delete(reference.metadata().storageLocation());
+            } catch (RuntimeException e) {
+                if (failure == null) {
+                    failure = e;
+                }
+            }
         }
-        return databaseManager.executeDelete(namespace, statement);
+        if (failure != null) {
+            throw failure;
+        }
+        return removed;
     }
 
     /**
      * Common store routine shared by {@link #put(ObjectStatement, String, InputStream)} and
      * {@link #update(ObjectStatement, String, InputStream)}.
      *
-     * <p>Validates the statement and additional keys, resolves the storage location,
-     * writes the file while computing its size and MD5 digest, then persists the
-     * metadata. When {@code overwrite} is {@code true}, an object previously stored at a
-     * different location is deleted first and the metadata row is upserted; otherwise a
-     * new row is inserted.</p>
+     * <p>The operation is atomic: new content is staged in a temporary file, the
+     * metadata row is committed, and only then is the staged file renamed into place.
+     * If the metadata write fails, the temporary file is removed and any previous
+     * object is left untouched. When {@code overwrite} is {@code true}, an object
+     * previously stored at a different location is deleted only after the replacement
+     * has been committed.</p>
      *
      * @param statement the statement carrying the primary key and additional key values
      * @param fileName  original file name
@@ -241,19 +261,20 @@ public class ObjectManager {
         validateKv(kv);
         String location = buildLocation(primaryKey, kv);
 
+        String existingLocation = null;
         if (overwrite) {
-            String existing = databaseManager.getStorageLocation(namespace, primaryKey);
-            if (existing != null && !existing.equals(location)) {
-                mainStorageManager.delete(existing);
-            }
+            existingLocation = databaseManager.getStorageLocation(namespace, primaryKey);
+        } else if (databaseManager.getStorageLocation(namespace, primaryKey) != null) {
+            throw new IllegalArgumentException("Object \"" + primaryKey + "\" already exists in namespace \"" + namespace + "\"");
         }
 
+        String tempLocation = location + ".tmp-" + UUID.randomUUID();
         try {
             MessageDigest md5 = MessageDigest.getInstance("MD5");
             CountingInputStream counting = new CountingInputStream(source);
             DigestInputStream digesting = new DigestInputStream(counting, md5);
 
-            mainStorageManager.put(location, digesting);
+            mainStorageManager.put(tempLocation, digesting);
 
             long size = counting.getByteCount();
             String md5Hex = HexFormat.of().formatHex(md5.digest());
@@ -266,8 +287,16 @@ public class ObjectManager {
                 databaseManager.insert(namespace, statement, fileName, extension, size, md5Hex,
                         createdAt, "DISK", location);
             }
+
+            mainStorageManager.rename(tempLocation, location);
+            if (existingLocation != null && !existingLocation.equals(location)) {
+                mainStorageManager.delete(existingLocation);
+            }
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
+        } catch (RuntimeException e) {
+            mainStorageManager.delete(tempLocation);
+            throw e;
         }
     }
 

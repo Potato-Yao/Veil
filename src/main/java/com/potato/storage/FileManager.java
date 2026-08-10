@@ -51,4 +51,13 @@ public abstract class FileManager {
      * @param location  the relative location of the object
      */
     public abstract void delete(String location);
+
+    /**
+     * Moves the object at {@code from} to {@code to}, replacing any object already
+     * stored at {@code to}.
+     *
+     * @param from  the current relative location of the object
+     * @param to    the destination relative location
+     */
+    public abstract void rename(String from, String to);
 }

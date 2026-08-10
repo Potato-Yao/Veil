@@ -4,8 +4,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 
 /**
  * {@link FileManager} implementation backed by the local filesystem.
@@ -106,6 +108,32 @@ public class DiskFileManager extends FileManager {
         Path target = resolve(location);
         try {
             Files.deleteIfExists(target);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Atomically moves the object at {@code rootPath.resolve(from)} to
+     * {@code rootPath.resolve(to)}, replacing any existing destination. Falls back to
+     * a non-atomic move on filesystems that do not support atomic moves.
+     *
+     * @param from  the current relative location of the object
+     * @param to    the destination relative location
+     */
+    @Override
+    public void rename(String from, String to) {
+        Path source = resolve(from);
+        Path target = resolve(to);
+        try {
+            Files.createDirectories(target.getParent());
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            try {
+                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException fallback) {
+                throw new UncheckedIOException(fallback);
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

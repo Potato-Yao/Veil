@@ -10,11 +10,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.sqlite.SQLiteDataSource;
 
+import javax.sql.DataSource;
+
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -462,5 +465,163 @@ class ObjectManagerTest {
         assertThrows(IllegalArgumentException.class, () -> empty.validateFor(ObjectStatement.Operation.UPDATE_BY_KEY));
         assertThrows(IllegalArgumentException.class, () -> withCondition.validateFor(ObjectStatement.Operation.UPDATE_BY_KEY));
         assertThrows(IllegalArgumentException.class, () -> withAssignment.validateFor(ObjectStatement.Operation.DELETE));
+    }
+
+    private static FailingDatabaseManager failingManager() {
+        HashMap<String, KeyType> keyColumns = new HashMap<>();
+        keyColumns.put("user_id", KeyType.TEXT);
+        return new FailingDatabaseManager(dataSource, keyColumns);
+    }
+
+    private static List<Path> tempFilesUnder(String namespace) throws IOException {
+        Path dir = tempDir.resolve(namespace);
+        if (!Files.exists(dir)) {
+            return List.of();
+        }
+        try (var stream = Files.walk(dir)) {
+            return stream.filter(Files::isRegularFile).toList();
+        }
+    }
+
+    @Test
+    void putRemovesTempFileWhenInsertFails() throws Exception {
+        FailingDatabaseManager failing = failingManager();
+        failing.failOn("insert");
+        ObjectManager manager = ObjectManager.build("put_insert_fail", failing);
+
+        assertThrows(RuntimeException.class, () ->
+                manager.put(key("obj", "u1"), "a.txt", new ByteArrayInputStream("data".getBytes())));
+
+        assertFalse(manager.checkExist(key("obj", "u1")));
+        assertTrue(tempFilesUnder("put_insert_fail").isEmpty());
+    }
+
+    @Test
+    void putOnExistingKeyThrowsBeforeTouchingFile() throws Exception {
+        FailingDatabaseManager failing = failingManager();
+        ObjectManager manager = ObjectManager.build("put_dup", failing);
+        byte[] original = "original".getBytes();
+        manager.put(key("obj", "u1"), "a.txt", new ByteArrayInputStream(original));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                manager.put(key("obj", "u1"), "b.txt", new ByteArrayInputStream("clobber".getBytes())));
+
+        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("put_dup/obj_u1")));
+        assertEquals(1, tempFilesUnder("put_dup").size());
+    }
+
+    @Test
+    void updatePreservesFileAndMetadataWhenUpsertFailsSameLocation() throws Exception {
+        FailingDatabaseManager failing = failingManager();
+        ObjectManager manager = ObjectManager.build("update_fail", failing);
+        byte[] original = "original".getBytes();
+        manager.put(key("obj", "u1"), "a.txt", new ByteArrayInputStream(original));
+        failing.failOn("upsert");
+
+        assertThrows(RuntimeException.class, () ->
+                manager.update(key("obj", "u1"), "b.txt", new ByteArrayInputStream("new version".getBytes())));
+
+        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_fail/obj_u1")));
+        assertEquals(original.length, databaseManager.getMetadata("update_fail", "obj").fileSize());
+        assertEquals(1, tempFilesUnder("update_fail").size());
+    }
+
+    @Test
+    void updatePreservesOldFileWhenUpsertFailsAndLocationChanges() throws Exception {
+        FailingDatabaseManager failing = failingManager();
+        ObjectManager manager = ObjectManager.build("update_reloc", failing);
+        byte[] original = "old file".getBytes();
+        manager.put(key("obj", "uA"), "a.txt", new ByteArrayInputStream(original));
+        failing.failOn("upsert");
+
+        assertThrows(RuntimeException.class, () ->
+                manager.update(key("obj", "uB"), "b.txt", new ByteArrayInputStream("new file".getBytes())));
+
+        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_reloc/obj_uA")));
+        assertEquals("update_reloc/obj_uA",
+                databaseManager.getStorageLocation("update_reloc", "obj"));
+        assertFalse(Files.exists(tempDir.resolve("update_reloc/obj_uB")));
+    }
+
+    @Test
+    void removeKeepsFileAndMetadataWhenDeleteFails() throws Exception {
+        FailingDatabaseManager failing = failingManager();
+        ObjectManager manager = ObjectManager.build("remove_fail", failing);
+        byte[] data = "bye".getBytes();
+        manager.put(key("obj", "u1"), "bye.txt", new ByteArrayInputStream(data));
+        failing.failOn("delete");
+
+        assertThrows(RuntimeException.class, () -> manager.remove(key("obj", "u1")));
+
+        assertArrayEquals(data, Files.readAllBytes(tempDir.resolve("remove_fail/obj_u1")));
+        assertNotNull(databaseManager.getMetadata("remove_fail", "obj"));
+    }
+
+    @Test
+    void removeAllKeepsFilesAndMetadataWhenExecuteDeleteFails() throws Exception {
+        FailingDatabaseManager failing = failingManager();
+        ObjectManager manager = ObjectManager.build("remove_all_fail", failing);
+        manager.put(key("r1", "u1"), "a.txt", new ByteArrayInputStream("one".getBytes()));
+        manager.put(key("r2", "u1"), "b.txt", new ByteArrayInputStream("two".getBytes()));
+        failing.failOn("executeDelete");
+
+        assertThrows(RuntimeException.class, () ->
+                manager.removeAll(ObjectStatement.builder().build()));
+
+        assertTrue(Files.exists(tempDir.resolve("remove_all_fail/r1_u1")));
+        assertTrue(Files.exists(tempDir.resolve("remove_all_fail/r2_u1")));
+        assertEquals(2, databaseManager.count("remove_all_fail", ObjectStatement.builder().build()));
+    }
+
+    /**
+     * {@link DatabaseManager} whose write operations can be made to fail on demand,
+     * used to verify that {@link ObjectManager} leaves no partial state behind.
+     */
+    private static class FailingDatabaseManager extends DatabaseManager {
+        private String failOn;
+
+        FailingDatabaseManager(DataSource dataSource, HashMap<String, KeyType> keyColumns) {
+            super(dataSource, keyColumns);
+        }
+
+        void failOn(String operation) {
+            this.failOn = operation;
+        }
+
+        private void failIf(String operation) {
+            if (operation.equals(failOn)) {
+                throw new RuntimeException("injected " + operation + " failure");
+            }
+        }
+
+        @Override
+        public void insert(String namespace, ObjectStatement statement,
+                           String fileName, String extension, long size, String md5,
+                           String createdAt, String storageType, String storageLocation) {
+            failIf("insert");
+            super.insert(namespace, statement, fileName, extension, size, md5,
+                    createdAt, storageType, storageLocation);
+        }
+
+        @Override
+        public void upsert(String namespace, ObjectStatement statement,
+                           String fileName, String extension, long size, String md5,
+                           String createdAt, String storageType, String storageLocation) {
+            failIf("upsert");
+            super.upsert(namespace, statement, fileName, extension, size, md5,
+                    createdAt, storageType, storageLocation);
+        }
+
+        @Override
+        public boolean delete(String namespace, String key) {
+            failIf("delete");
+            return super.delete(namespace, key);
+        }
+
+        @Override
+        public long executeDelete(String namespace, ObjectStatement statement) {
+            failIf("executeDelete");
+            return super.executeDelete(namespace, statement);
+        }
     }
 }
