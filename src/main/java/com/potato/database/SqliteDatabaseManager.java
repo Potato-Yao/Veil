@@ -1,4 +1,4 @@
-package com.potato;
+package com.potato.database;
 
 import javax.sql.DataSource;
 import java.util.HashMap;

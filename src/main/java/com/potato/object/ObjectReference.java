@@ -1,4 +1,6 @@
-package com.potato;
+package com.potato.object;
+
+import com.potato.database.DatabaseManager;
 
 import java.util.Map;
 

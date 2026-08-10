@@ -5,7 +5,13 @@ A Java library for storing and managing files with metadata.
 ## Usage
 
 ```java
-import com.potato.*;
+import com.potato.VeilConfiguration;
+import com.potato.database.DatabaseManager;
+import com.potato.database.KeyType;
+import com.potato.object.ObjectData;
+import com.potato.object.ObjectManager;
+import com.potato.object.ObjectReference;
+import com.potato.object.ObjectStatement;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -91,6 +97,12 @@ Requires JDK 17+.
 ./gradlew build
 ```
 
+To run the example application in `src/examples`:
+
+```bash
+./gradlew runExample
+```
+
 To publish to a Maven repository of your choice:
 
 ```bash
@@ -123,7 +135,8 @@ By default metadata is persisted in SQLite. To use PostgreSQL instead, pass a Po
 `DataSource` and select `DatabaseType.POSTGRES` when building the `DatabaseManager`:
 
 ```java
-import com.potato.*;
+import com.potato.database.DatabaseManager;
+import com.potato.database.DatabaseType;
 import org.postgresql.ds.PGSimpleDataSource;
 
 PGSimpleDataSource dataSource = new PGSimpleDataSource();

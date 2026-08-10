@@ -1,4 +1,6 @@
-package com.potato;
+package com.potato.storage;
+
+import com.potato.object.ObjectManager;
 
 import java.io.InputStream;
 import java.io.OutputStream;

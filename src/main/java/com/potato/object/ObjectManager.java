@@ -1,4 +1,9 @@
-package com.potato;
+package com.potato.object;
+
+import com.potato.VeilConfiguration;
+import com.potato.database.DatabaseManager;
+import com.potato.storage.FileManager;
+import com.potato.util.CountingInputStream;
 
 import java.io.InputStream;
 import java.security.DigestInputStream;

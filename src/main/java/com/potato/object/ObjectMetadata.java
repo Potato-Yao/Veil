@@ -1,4 +1,4 @@
-package com.potato;
+package com.potato.object;
 
 /**
  * Immutable metadata describing a stored object.

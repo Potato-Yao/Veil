@@ -1,4 +1,4 @@
-package com.potato;
+package com.potato.database;
 
 /**
  * SQL column types available for additional key columns.

@@ -1,5 +1,8 @@
 package com.potato;
 
+import com.potato.object.ObjectManager;
+import com.potato.storage.DiskFileManager;
+import com.potato.storage.FileManager;
 import org.sqlite.SQLiteDataSource;
 
 import javax.sql.DataSource;

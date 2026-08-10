@@ -1,4 +1,4 @@
-package com.potato;
+package com.potato.util;
 
 import java.io.FilterInputStream;
 import java.io.IOException;

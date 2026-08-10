@@ -1,4 +1,8 @@
-package com.potato;
+package com.potato.database;
+
+import com.potato.object.ObjectMetadata;
+import com.potato.object.ObjectReference;
+import com.potato.object.ObjectStatement;
 
 import javax.sql.DataSource;
 import java.sql.Connection;

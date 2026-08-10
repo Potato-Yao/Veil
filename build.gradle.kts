@@ -23,6 +23,13 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers-junit-jupiter")
 }
 
+sourceSets {
+    create("examples") {
+        compileClasspath += sourceSets["main"].output + configurations["runtimeClasspath"]
+        runtimeClasspath += output + compileClasspath
+    }
+}
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(17)
@@ -47,4 +54,11 @@ publishing {
 tasks.test {
     useJUnitPlatform()
     forkEvery = 1
+}
+
+tasks.register<JavaExec>("runExample") {
+    group = "application"
+    description = "Runs the example application"
+    classpath = sourceSets["examples"].runtimeClasspath
+    mainClass.set("com.potato.examples.ExampleMain")
 }

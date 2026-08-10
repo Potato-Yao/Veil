@@ -1,4 +1,12 @@
-package com.potato;
+package com.potato.examples;
+
+import com.potato.VeilConfiguration;
+import com.potato.database.DatabaseManager;
+import com.potato.database.KeyType;
+import com.potato.object.ObjectData;
+import com.potato.object.ObjectManager;
+import com.potato.object.ObjectReference;
+import com.potato.object.ObjectStatement;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -6,7 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
-public class Main {
+public class ExampleMain {
     public static void main(String[] args) {
         // 1. Initialize the global configuration (once per process).
         VeilConfiguration configuration = VeilConfiguration.initForDev();

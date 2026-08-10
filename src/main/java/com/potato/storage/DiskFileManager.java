@@ -1,4 +1,4 @@
-package com.potato;
+package com.potato.storage;
 
 import java.io.IOException;
 import java.io.InputStream;

@@ -1,5 +1,8 @@
-package com.potato;
+package com.potato.database;
 
+import com.potato.VeilConfiguration;
+import com.potato.object.ObjectManager;
+import com.potato.storage.DiskFileManager;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

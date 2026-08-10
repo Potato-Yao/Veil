@@ -1,4 +1,7 @@
-package com.potato;
+package com.potato.object;
+
+import com.potato.database.DatabaseManager;
+import com.potato.database.QueryValue;
 
 import java.util.ArrayList;
 import java.util.Collection;

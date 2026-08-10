@@ -1,4 +1,4 @@
-package com.potato;
+package com.potato.database;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
