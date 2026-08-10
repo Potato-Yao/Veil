@@ -73,17 +73,17 @@ public class ObjectManager {
      * Stores a new object under the given primary key.
      *
      * <p>If an object with the same primary key already exists, the store fails with an
-     * exception. Use {@link #update(String, String, InputStream, Map)} to replace
+     * exception. Use {@link #update(ObjectStatement, String, InputStream)} to replace
      * an existing object.</p>
      *
-     * @param primaryKey  unique key identifying the object
-     * @param fileName    original file name; its extension is stored as metadata
-     * @param source      stream containing the object data
-     * @param additionKey values for the additional key columns, or {@code null}
-     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column
+     * @param statement the statement carrying the primary key (and additional key values)
+     * @param fileName  original file name; its extension is stored as metadata
+     * @param source    stream containing the object data
+     * @throws IllegalArgumentException if the statement does not fit an insert or
+     *                                  contains an unknown key column
      */
-    public void put(String primaryKey, String fileName, InputStream source, Map<String, String> additionKey) {
-        store(primaryKey, fileName, source, additionKey, false);
+    public void put(ObjectStatement statement, String fileName, InputStream source) {
+        store(statement, fileName, source, false);
     }
 
     /**
@@ -93,14 +93,14 @@ public class ObjectManager {
      * is deleted from storage before the new data is written. Access statistics are
      * preserved across the replacement.</p>
      *
-     * @param primaryKey  unique key identifying the object
-     * @param fileName    original file name; its extension is stored as metadata
-     * @param source      stream containing the object data
-     * @param additionKey values for the additional key columns, or {@code null}
-     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column
+     * @param statement the statement carrying the primary key (and additional key values)
+     * @param fileName  original file name; its extension is stored as metadata
+     * @param source    stream containing the object data
+     * @throws IllegalArgumentException if the statement does not fit an insert or
+     *                                  contains an unknown key column
      */
-    public void update(String primaryKey, String fileName, InputStream source, Map<String, String> additionKey) {
-        store(primaryKey, fileName, source, additionKey, true);
+    public void update(ObjectStatement statement, String fileName, InputStream source) {
+        store(statement, fileName, source, true);
     }
 
     /**
@@ -109,54 +109,51 @@ public class ObjectManager {
      * <p>Returns the object's metadata together with an {@link InputStream} of its
      * contents. The caller is responsible for closing the returned stream.</p>
      *
-     * @param primaryKey  unique key identifying the object
-     * @param additionKey values for the additional key columns, or {@code null}
+     * @param statement the statement carrying the primary key (and additional key values)
      * @return the object's metadata and content stream
-     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column,
+     * @throws IllegalArgumentException if the statement contains an unknown key column,
      *                                  or if no object with the given key exists
      */
-    public ObjectData get(String primaryKey, Map<String, String> additionKey) {
-        validateAdditionKeys(additionKey);
-        ObjectMetadata metadata = databaseManager.getMetadata(namespace, primaryKey);
+    public ObjectData get(ObjectStatement statement) {
+        validateKv(statement.kv());
+        ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement.key());
         if (metadata == null) {
-            throw new IllegalArgumentException("Object \"" + primaryKey + "\" does not exist in namespace \"" + namespace + "\"");
+            throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
         }
-        databaseManager.updateAccess(namespace, primaryKey);
-        InputStream stream = mainStorageManager.read(buildLocation(primaryKey, additionKey));
+        databaseManager.updateAccess(namespace, statement.key());
+        InputStream stream = mainStorageManager.read(buildLocation(statement.key(), statement.kv()));
         return new ObjectData(metadata, stream);
     }
 
     /**
      * Removes a stored object, deleting both its file and its metadata row.
      *
-     * @param primaryKey  unique key identifying the object
-     * @param additionKey values for the additional key columns, or {@code null}
+     * @param statement the statement carrying the primary key (and additional key values)
      * @return {@code true} once the object has been removed
-     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column,
+     * @throws IllegalArgumentException if the statement contains an unknown key column,
      *                                  or if no object with the given key exists
      */
-    public boolean remove(String primaryKey, Map<String, String> additionKey) {
-        validateAdditionKeys(additionKey);
-        String location = databaseManager.getStorageLocation(namespace, primaryKey);
+    public boolean remove(ObjectStatement statement) {
+        validateKv(statement.kv());
+        String location = databaseManager.getStorageLocation(namespace, statement.key());
         if (location == null) {
-            throw new IllegalArgumentException("Object \"" + primaryKey + "\" does not exist in namespace \"" + namespace + "\"");
+            throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
         }
         mainStorageManager.delete(location);
-        databaseManager.delete(namespace, primaryKey);
+        databaseManager.delete(namespace, statement.key());
         return true;
     }
 
     /**
      * Checks whether an object with the given key exists.
      *
-     * @param primaryKey  unique key identifying the object
-     * @param additionKey values for the additional key columns, or {@code null}
+     * @param statement the statement carrying the primary key (and additional key values)
      * @return {@code true} if the object exists, {@code false} otherwise
-     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column
+     * @throws IllegalArgumentException if the statement contains an unknown key column
      */
-    public boolean checkExist(String primaryKey, Map<String, String> additionKey) {
-        validateAdditionKeys(additionKey);
-        return databaseManager.getStorageLocation(namespace, primaryKey) != null;
+    public boolean checkExist(ObjectStatement statement) {
+        validateKv(statement.kv());
+        return databaseManager.getStorageLocation(namespace, statement.key()) != null;
     }
 
     /**
@@ -185,25 +182,23 @@ public class ObjectManager {
     /**
      * Partially updates the metadata of a stored object without touching its content.
      *
-     * <p>The statement must carry at least one {@code set(...)} assignment and no
-     * conditions: the target object is identified by its primary key (and additional
-     * keys). Only the assigned metadata columns are changed; content, access statistics,
-     * and creation time are left untouched.</p>
+     * <p>The statement must carry a primary key, at least one {@code set(...)} assignment
+     * and no conditions: the target object is identified by its primary key (and
+     * additional keys). Only the assigned metadata columns are changed; content, access
+     * statistics, and creation time are left untouched.</p>
      *
-     * @param primaryKey  unique key identifying the object
-     * @param additionKey values for the additional key columns, or {@code null}
-     * @param statement   the assignments to apply
-     * @throws IllegalArgumentException if {@code additionKey} contains an unknown column,
+     * @param statement the statement carrying the primary key and the assignments to apply
+     * @throws IllegalArgumentException if the statement contains an unknown key column,
      *                                  if the object does not exist, or if the statement
-     *                                  has no assignments or carries conditions
+     *                                  has no key, no assignments or carries conditions
      */
-    public void updateMetadata(String primaryKey, Map<String, String> additionKey, ObjectStatement statement) {
-        validateAdditionKeys(additionKey);
+    public void updateMetadata(ObjectStatement statement) {
+        validateKv(statement.kv());
         statement.validateFor(ObjectStatement.Operation.UPDATE_BY_KEY);
-        if (databaseManager.getStorageLocation(namespace, primaryKey) == null) {
-            throw new IllegalArgumentException("Object \"" + primaryKey + "\" does not exist in namespace \"" + namespace + "\"");
+        if (databaseManager.getStorageLocation(namespace, statement.key()) == null) {
+            throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
         }
-        databaseManager.executeUpdate(namespace, primaryKey, statement);
+        databaseManager.executeUpdate(namespace, statement.key(), statement);
     }
 
     /**
@@ -225,24 +220,26 @@ public class ObjectManager {
     }
 
     /**
-     * Common store routine shared by {@link #put(String, String, InputStream, Map)} and
-     * {@link #update(String, String, InputStream, Map)}.
+     * Common store routine shared by {@link #put(ObjectStatement, String, InputStream)} and
+     * {@link #update(ObjectStatement, String, InputStream)}.
      *
-     * <p>Validates the additional keys, resolves the storage location, writes the file
-     * while computing its size and MD5 digest, then persists the metadata. When
-     * {@code overwrite} is {@code true}, an object previously stored at a different
-     * location is deleted first and the metadata row is upserted; otherwise a new row is
-     * inserted.</p>
+     * <p>Validates the statement and additional keys, resolves the storage location,
+     * writes the file while computing its size and MD5 digest, then persists the
+     * metadata. When {@code overwrite} is {@code true}, an object previously stored at a
+     * different location is deleted first and the metadata row is upserted; otherwise a
+     * new row is inserted.</p>
      *
-     * @param primaryKey  unique key identifying the object
-     * @param fileName    original file name
-     * @param source      stream containing the object data
-     * @param additionKey values for the additional key columns, or {@code null}
-     * @param overwrite   whether to replace an existing object with the same key
+     * @param statement the statement carrying the primary key and additional key values
+     * @param fileName  original file name
+     * @param source    stream containing the object data
+     * @param overwrite whether to replace an existing object with the same key
      */
-    private void store(String primaryKey, String fileName, InputStream source, Map<String, String> additionKey, boolean overwrite) {
-        validateAdditionKeys(additionKey);
-        String location = buildLocation(primaryKey, additionKey);
+    private void store(ObjectStatement statement, String fileName, InputStream source, boolean overwrite) {
+        statement.validateFor(ObjectStatement.Operation.INSERT);
+        String primaryKey = statement.key();
+        Map<String, String> kv = statement.kv();
+        validateKv(kv);
+        String location = buildLocation(primaryKey, kv);
 
         if (overwrite) {
             String existing = databaseManager.getStorageLocation(namespace, primaryKey);
@@ -263,10 +260,10 @@ public class ObjectManager {
             String extension = extractExtension(fileName);
             String createdAt = Instant.now().toString();
             if (overwrite) {
-                databaseManager.upsert(namespace, primaryKey, additionKey, fileName, extension, size, md5Hex,
+                databaseManager.upsert(namespace, statement, fileName, extension, size, md5Hex,
                         createdAt, "DISK", location);
             } else {
-                databaseManager.insert(namespace, primaryKey, additionKey, fileName, extension, size, md5Hex,
+                databaseManager.insert(namespace, statement, fileName, extension, size, md5Hex,
                         createdAt, "DISK", location);
             }
         } catch (NoSuchAlgorithmException e) {
@@ -275,16 +272,16 @@ public class ObjectManager {
     }
 
     /**
-     * Ensures all names in {@code additionKey} are defined additional key columns.
+     * Ensures all names in {@code kv} are defined additional key columns.
      *
-     * @param additionKey the additional key values to validate, or {@code null}
+     * @param kv the additional key values to validate, or {@code null}
      * @throws IllegalArgumentException if a key is not a known additional key column
      */
-    private void validateAdditionKeys(Map<String, String> additionKey) {
-        if (additionKey == null) {
+    private void validateKv(Map<String, String> kv) {
+        if (kv == null) {
             return;
         }
-        for (String name : additionKey.keySet()) {
+        for (String name : kv.keySet()) {
             if (!databaseManager.getAdditionalKeyColumnNames().contains(name)) {
                 throw new IllegalArgumentException("Unknown key column: \"" + name + "\"");
             }
@@ -296,16 +293,16 @@ public class ObjectManager {
      * {@code <key>} is the primary key followed by {@code _value} for each provided
      * additional key column, in the order the columns are defined in the database.
      *
-     * @param primaryKey  the primary key of the object
-     * @param additionKey the additional key values, or {@code null}
+     * @param primaryKey the primary key of the object
+     * @param kv         the additional key values, or {@code null}
      * @return the storage location relative to the file manager root
      */
-    private String buildLocation(String primaryKey, Map<String, String> additionKey) {
+    private String buildLocation(String primaryKey, Map<String, String> kv) {
         StringBuilder name = new StringBuilder(primaryKey);
-        if (additionKey != null) {
+        if (kv != null) {
             for (String column : databaseManager.getAdditionalKeyColumnNames()) {
-                if (additionKey.containsKey(column)) {
-                    name.append('_').append(additionKey.get(column));
+                if (kv.containsKey(column)) {
+                    name.append('_').append(kv.get(column));
                 }
             }
         }

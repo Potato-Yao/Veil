@@ -46,6 +46,10 @@ class ObjectManagerTest {
         objectManager = ObjectManager.build("objects", databaseManager);
     }
 
+    private static ObjectStatement key(String primaryKey, String userId) {
+        return ObjectStatement.builder().key(primaryKey).kv("user_id", userId).build();
+    }
+
     @Test
     void countingInputStreamCountsBytes() throws IOException {
         byte[] data = "hello world".getBytes();
@@ -64,7 +68,7 @@ class ObjectManagerTest {
         String primaryKey = "obj1";
         String fileName = "photo.png";
 
-        objectManager.put(primaryKey, fileName, new ByteArrayInputStream(data), Map.of("user_id", "u7"));
+        objectManager.put(key(primaryKey, "u7"), fileName, new ByteArrayInputStream(data));
 
         Path stored = tempDir.resolve("objects/obj1_u7");
         assertTrue(Files.exists(stored));
@@ -92,8 +96,8 @@ class ObjectManagerTest {
     @Test
     void putThrowsOnUnknownKey() {
         assertThrows(IllegalArgumentException.class, () ->
-                objectManager.put("obj2", "a.txt", new ByteArrayInputStream("x".getBytes()),
-                        Map.of("unknown_col", "v")));
+                objectManager.put(ObjectStatement.builder().key("obj2").kv("unknown_col", "v").build(),
+                        "a.txt", new ByteArrayInputStream("x".getBytes())));
     }
 
     @Test
@@ -103,8 +107,8 @@ class ObjectManagerTest {
         String primaryKey = "obj3";
         String fileName = "doc.txt";
 
-        objectManager.put(primaryKey, fileName, new ByteArrayInputStream(first), Map.of("user_id", "u3"));
-        objectManager.update(primaryKey, fileName, new ByteArrayInputStream(second), Map.of("user_id", "u3"));
+        objectManager.put(key(primaryKey, "u3"), fileName, new ByteArrayInputStream(first));
+        objectManager.update(key(primaryKey, "u3"), fileName, new ByteArrayInputStream(second));
 
         Path stored = tempDir.resolve("objects/obj3_u3");
         assertArrayEquals(second, Files.readAllBytes(stored));
@@ -131,8 +135,8 @@ class ObjectManagerTest {
         String primaryKey = "obj4";
         String fileName = "doc.txt";
 
-        objectManager.put(primaryKey, fileName, new ByteArrayInputStream(first), Map.of("user_id", "u4"));
-        objectManager.update(primaryKey, fileName, new ByteArrayInputStream(second), Map.of("user_id", "u4b"));
+        objectManager.put(key(primaryKey, "u4"), fileName, new ByteArrayInputStream(first));
+        objectManager.update(key(primaryKey, "u4b"), fileName, new ByteArrayInputStream(second));
 
         assertFalse(Files.exists(tempDir.resolve("objects/obj4_u4")));
         assertArrayEquals(second, Files.readAllBytes(tempDir.resolve("objects/obj4_u4b")));
@@ -144,9 +148,9 @@ class ObjectManagerTest {
         String primaryKey = "obj5";
         String fileName = "get.txt";
 
-        objectManager.put(primaryKey, fileName, new ByteArrayInputStream(data), Map.of("user_id", "u5"));
+        objectManager.put(key(primaryKey, "u5"), fileName, new ByteArrayInputStream(data));
 
-        try (ObjectData object = objectManager.get(primaryKey, Map.of("user_id", "u5"))) {
+        try (ObjectData object = objectManager.get(key(primaryKey, "u5"))) {
             assertEquals(fileName, object.metadata().fileName());
             assertEquals("txt", object.metadata().fileExtension());
             assertEquals(data.length, object.metadata().fileSize());
@@ -159,7 +163,7 @@ class ObjectManagerTest {
     @Test
     void getThrowsWhenObjectDoesNotExist() {
         assertThrows(IllegalArgumentException.class, () ->
-                objectManager.get("missing", Map.of("user_id", "uX")));
+                objectManager.get(key("missing", "uX")));
     }
 
     @Test
@@ -168,10 +172,10 @@ class ObjectManagerTest {
         String primaryKey = "obj6";
         String fileName = "bye.txt";
 
-        objectManager.put(primaryKey, fileName, new ByteArrayInputStream(data), Map.of("user_id", "u6"));
+        objectManager.put(key(primaryKey, "u6"), fileName, new ByteArrayInputStream(data));
         assertTrue(Files.exists(tempDir.resolve("objects/obj6_u6")));
 
-        assertTrue(objectManager.remove(primaryKey, Map.of("user_id", "u6")));
+        assertTrue(objectManager.remove(key(primaryKey, "u6")));
         assertFalse(Files.exists(tempDir.resolve("objects/obj6_u6")));
 
         try (var connection = dataSource.getConnection();
@@ -186,28 +190,28 @@ class ObjectManagerTest {
     @Test
     void removeThrowsWhenObjectDoesNotExist() {
         assertThrows(IllegalArgumentException.class, () ->
-                objectManager.remove("missing", Map.of("user_id", "uX")));
+                objectManager.remove(key("missing", "uX")));
     }
 
     @Test
     void checkExistReflectsPutAndRemove() throws Exception {
         String primaryKey = "obj7";
 
-        assertFalse(objectManager.checkExist(primaryKey, Map.of("user_id", "u7")));
-        objectManager.put(primaryKey, "check.txt", new ByteArrayInputStream("check".getBytes()), Map.of("user_id", "u7"));
-        assertTrue(objectManager.checkExist(primaryKey, Map.of("user_id", "u7")));
-        objectManager.remove(primaryKey, Map.of("user_id", "u7"));
-        assertFalse(objectManager.checkExist(primaryKey, Map.of("user_id", "u7")));
+        assertFalse(objectManager.checkExist(key(primaryKey, "u7")));
+        objectManager.put(key(primaryKey, "u7"), "check.txt", new ByteArrayInputStream("check".getBytes()));
+        assertTrue(objectManager.checkExist(key(primaryKey, "u7")));
+        objectManager.remove(key(primaryKey, "u7"));
+        assertFalse(objectManager.checkExist(key(primaryKey, "u7")));
     }
 
     @Test
     void getUpdatesAccessCountAndLastAccessedAt() throws Exception {
         String primaryKey = "obj8";
 
-        objectManager.put(primaryKey, "track.txt", new ByteArrayInputStream("track me".getBytes()), Map.of("user_id", "u8"));
-        try (ObjectData ignored = objectManager.get(primaryKey, Map.of("user_id", "u8"))) {
+        objectManager.put(key(primaryKey, "u8"), "track.txt", new ByteArrayInputStream("track me".getBytes()));
+        try (ObjectData ignored = objectManager.get(key(primaryKey, "u8"))) {
         }
-        try (ObjectData ignored = objectManager.get(primaryKey, Map.of("user_id", "u8"))) {
+        try (ObjectData ignored = objectManager.get(key(primaryKey, "u8"))) {
         }
 
         try (var connection = dataSource.getConnection();
@@ -225,11 +229,11 @@ class ObjectManagerTest {
     void getReturnsMetadataWithAccessCount() throws Exception {
         String primaryKey = "obj10";
 
-        objectManager.put(primaryKey, "count.txt", new ByteArrayInputStream("count".getBytes()), Map.of("user_id", "u10"));
-        try (ObjectData object = objectManager.get(primaryKey, Map.of("user_id", "u10"))) {
+        objectManager.put(key(primaryKey, "u10"), "count.txt", new ByteArrayInputStream("count".getBytes()));
+        try (ObjectData object = objectManager.get(key(primaryKey, "u10"))) {
             assertEquals(0, object.metadata().accessCount());
         }
-        try (ObjectData object = objectManager.get(primaryKey, Map.of("user_id", "u10"))) {
+        try (ObjectData object = objectManager.get(key(primaryKey, "u10"))) {
             assertEquals(1, object.metadata().accessCount());
         }
     }
@@ -239,10 +243,10 @@ class ObjectManagerTest {
         String primaryKey = "obj9";
         String fileName = "doc.txt";
 
-        objectManager.put(primaryKey, fileName, new ByteArrayInputStream("original".getBytes()), Map.of("user_id", "u9"));
-        try (ObjectData ignored = objectManager.get(primaryKey, Map.of("user_id", "u9"))) {
+        objectManager.put(key(primaryKey, "u9"), fileName, new ByteArrayInputStream("original".getBytes()));
+        try (ObjectData ignored = objectManager.get(key(primaryKey, "u9"))) {
         }
-        objectManager.update(primaryKey, fileName, new ByteArrayInputStream("new version".getBytes()), Map.of("user_id", "u9"));
+        objectManager.update(key(primaryKey, "u9"), fileName, new ByteArrayInputStream("new version".getBytes()));
 
         try (var connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
@@ -258,9 +262,9 @@ class ObjectManagerTest {
     @Test
     void queryEndToEnd() throws Exception {
         ObjectManager queryManager = ObjectManager.build("query", databaseManager);
-        queryManager.put("qA", "a.png", new ByteArrayInputStream("hello".getBytes()), Map.of("user_id", "uA"));
-        queryManager.put("qB", "b.jpg", new ByteArrayInputStream("abcdefghijklmno".getBytes()), Map.of("user_id", "uB"));
-        queryManager.put("qC", "c.png", new ByteArrayInputStream("12345678".getBytes()), Map.of("user_id", "uC"));
+        queryManager.put(key("qA", "uA"), "a.png", new ByteArrayInputStream("hello".getBytes()));
+        queryManager.put(key("qB", "uB"), "b.jpg", new ByteArrayInputStream("abcdefghijklmno".getBytes()));
+        queryManager.put(key("qC", "uC"), "c.png", new ByteArrayInputStream("12345678".getBytes()));
 
         List<ObjectReference> png = databaseManager.query("query",
                 ObjectStatement.builder().where("file_extension", ObjectStatement.Op.EQ, "png").build());
@@ -297,14 +301,14 @@ class ObjectManagerTest {
     @Test
     void queryResultIsAddressable() throws Exception {
         ObjectManager queryManager = ObjectManager.build("query_addressable", databaseManager);
-        queryManager.put("addr1", "doc.txt", new ByteArrayInputStream("addressable".getBytes()), Map.of("user_id", "uX"));
+        queryManager.put(key("addr1", "uX"), "doc.txt", new ByteArrayInputStream("addressable".getBytes()));
 
         ObjectReference reference = databaseManager.query("query_addressable", ObjectStatement.builder().build()).get(0);
         assertEquals("addr1", reference.key());
-        assertEquals(Map.of("user_id", "uX"), reference.additionKeys());
+        assertEquals(Map.of("user_id", "uX"), reference.kv());
         assertEquals("doc.txt", reference.metadata().fileName());
 
-        try (ObjectData object = queryManager.get(reference.key(), reference.additionKeys())) {
+        try (ObjectData object = queryManager.get(ObjectStatement.builder().key(reference.key()).kv(reference.kv()).build())) {
             assertArrayEquals("addressable".getBytes(), object.stream().readAllBytes());
         }
     }
@@ -322,8 +326,8 @@ class ObjectManagerTest {
     @Test
     void queryWithIntValuesWorks() throws Exception {
         ObjectManager queryManager = ObjectManager.build("query_ints", databaseManager);
-        queryManager.put("iA", "a.txt", new ByteArrayInputStream("12345".getBytes()), Map.of("user_id", "uI"));
-        queryManager.put("iB", "b.txt", new ByteArrayInputStream("123456789".getBytes()), Map.of("user_id", "uI"));
+        queryManager.put(key("iA", "uI"), "a.txt", new ByteArrayInputStream("12345".getBytes()));
+        queryManager.put(key("iB", "uI"), "b.txt", new ByteArrayInputStream("123456789".getBytes()));
 
         List<ObjectReference> results = databaseManager.query("query_ints",
                 ObjectStatement.builder().where("file_size", ObjectStatement.Op.GT, 5).build());
@@ -335,10 +339,10 @@ class ObjectManagerTest {
         ObjectManager metaManager = ObjectManager.build("meta", databaseManager);
         byte[] data = "meta payload".getBytes();
         String primaryKey = "meta1";
-        metaManager.put(primaryKey, "photo.png", new ByteArrayInputStream(data), Map.of("user_id", "uM"));
+        metaManager.put(key(primaryKey, "uM"), "photo.png", new ByteArrayInputStream(data));
 
-        metaManager.updateMetadata(primaryKey, Map.of("user_id", "uM"),
-                ObjectStatement.builder().set("file_name", "renamed.png").build());
+        metaManager.updateMetadata(ObjectStatement.builder().key(primaryKey).kv("user_id", "uM")
+                .set("file_name", "renamed.png").build());
 
         ObjectMetadata afterName = databaseManager.getMetadata("meta", primaryKey);
         assertEquals("renamed.png", afterName.fileName());
@@ -347,14 +351,14 @@ class ObjectManagerTest {
         assertEquals("meta/meta1_uM", afterName.storageLocation());
         assertEquals(0, afterName.accessCount());
 
-        metaManager.updateMetadata(primaryKey, Map.of("user_id", "uM"),
-                ObjectStatement.builder().set("file_extension", "jpg").build());
+        metaManager.updateMetadata(ObjectStatement.builder().key(primaryKey).kv("user_id", "uM")
+                .set("file_extension", "jpg").build());
         ObjectMetadata afterExtension = databaseManager.getMetadata("meta", primaryKey);
         assertEquals("renamed.png", afterExtension.fileName());
         assertEquals("jpg", afterExtension.fileExtension());
 
-        metaManager.updateMetadata(primaryKey, Map.of("user_id", "uM"),
-                ObjectStatement.builder().set("file_name", "final.jpg").build());
+        metaManager.updateMetadata(ObjectStatement.builder().key(primaryKey).kv("user_id", "uM")
+                .set("file_name", "final.jpg").build());
         ObjectMetadata afterBoth = databaseManager.getMetadata("meta", primaryKey);
         assertEquals("final.jpg", afterBoth.fileName());
         assertEquals("jpg", afterBoth.fileExtension());
@@ -364,27 +368,27 @@ class ObjectManagerTest {
     void updateMetadataThrowsWhenObjectDoesNotExist() {
         ObjectManager metaManager = ObjectManager.build("meta_missing", databaseManager);
         assertThrows(IllegalArgumentException.class, () ->
-                metaManager.updateMetadata("nope", Map.of("user_id", "uX"),
-                        ObjectStatement.builder().set("file_name", "x.txt").build()));
+                metaManager.updateMetadata(ObjectStatement.builder().key("nope").kv("user_id", "uX")
+                        .set("file_name", "x.txt").build()));
     }
 
     @Test
     void updateMetadataRejectsEmptyUpdateAndConditions() throws Exception {
         ObjectManager metaManager = ObjectManager.build("meta_invalid", databaseManager);
-        metaManager.put("m1", "a.txt", new ByteArrayInputStream("a".getBytes()), Map.of("user_id", "u1"));
+        metaManager.put(key("m1", "u1"), "a.txt", new ByteArrayInputStream("a".getBytes()));
         assertThrows(IllegalArgumentException.class, () ->
-                metaManager.updateMetadata("m1", Map.of("user_id", "u1"), ObjectStatement.builder().build()));
+                metaManager.updateMetadata(ObjectStatement.builder().key("m1").kv("user_id", "u1").build()));
         assertThrows(IllegalArgumentException.class, () ->
-                metaManager.updateMetadata("m1", Map.of("user_id", "u1"),
-                        ObjectStatement.builder().set("file_name", "b.txt")
-                                .where("file_extension", ObjectStatement.Op.EQ, "txt").build()));
+                metaManager.updateMetadata(ObjectStatement.builder().key("m1").kv("user_id", "u1")
+                        .set("file_name", "b.txt")
+                        .where("file_extension", ObjectStatement.Op.EQ, "txt").build()));
     }
 
     @Test
     void executeUpdateBatchUpdatesMatchingRows() throws Exception {
         ObjectManager batchManager = ObjectManager.build("batch", databaseManager);
-        batchManager.put("b1", "small.txt", new ByteArrayInputStream("123".getBytes()), Map.of("user_id", "uB"));
-        batchManager.put("b2", "big.txt", new ByteArrayInputStream("12345678901234567890".getBytes()), Map.of("user_id", "uB"));
+        batchManager.put(key("b1", "uB"), "small.txt", new ByteArrayInputStream("123".getBytes()));
+        batchManager.put(key("b2", "uB"), "big.txt", new ByteArrayInputStream("12345678901234567890".getBytes()));
 
         long updated = databaseManager.executeUpdate("batch",
                 ObjectStatement.builder().set("file_name", "renamed.txt")
@@ -405,9 +409,9 @@ class ObjectManagerTest {
     @Test
     void removeAllDeletesMatchingObjectsAndFiles() throws Exception {
         ObjectManager removeManager = ObjectManager.build("remove_all", databaseManager);
-        removeManager.put("r1", "a.png", new ByteArrayInputStream("one".getBytes()), Map.of("user_id", "uR"));
-        removeManager.put("r2", "b.txt", new ByteArrayInputStream("two".getBytes()), Map.of("user_id", "uR"));
-        removeManager.put("r3", "c.png", new ByteArrayInputStream("three".getBytes()), Map.of("user_id", "uR"));
+        removeManager.put(key("r1", "uR"), "a.png", new ByteArrayInputStream("one".getBytes()));
+        removeManager.put(key("r2", "uR"), "b.txt", new ByteArrayInputStream("two".getBytes()));
+        removeManager.put(key("r3", "uR"), "c.png", new ByteArrayInputStream("three".getBytes()));
 
         long removed = removeManager.removeAll(ObjectStatement.builder()
                 .where("file_extension", ObjectStatement.Op.EQ, "png").build());
@@ -416,15 +420,15 @@ class ObjectManagerTest {
         assertFalse(Files.exists(tempDir.resolve("remove_all/r1_uR")));
         assertFalse(Files.exists(tempDir.resolve("remove_all/r3_uR")));
         assertTrue(Files.exists(tempDir.resolve("remove_all/r2_uR")));
-        assertFalse(removeManager.checkExist("r1", Map.of("user_id", "uR")));
-        assertTrue(removeManager.checkExist("r2", Map.of("user_id", "uR")));
+        assertFalse(removeManager.checkExist(key("r1", "uR")));
+        assertTrue(removeManager.checkExist(key("r2", "uR")));
         assertEquals(1, databaseManager.count("remove_all", ObjectStatement.builder().build()));
     }
 
     @Test
     void queryAndCountRejectAssignments() throws Exception {
         ObjectManager manager = ObjectManager.build("reject_query", databaseManager);
-        manager.put("k1", "a.txt", new ByteArrayInputStream("a".getBytes()), Map.of("user_id", "u1"));
+        manager.put(key("k1", "u1"), "a.txt", new ByteArrayInputStream("a".getBytes()));
 
         ObjectStatement withAssignment = ObjectStatement.builder().set("file_name", "b.txt").build();
         assertThrows(IllegalArgumentException.class, () -> databaseManager.query("reject_query", withAssignment));

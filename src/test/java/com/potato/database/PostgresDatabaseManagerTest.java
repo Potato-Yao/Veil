@@ -2,6 +2,7 @@ package com.potato.database;
 
 import com.potato.VeilConfiguration;
 import com.potato.object.ObjectManager;
+import com.potato.object.ObjectStatement;
 import com.potato.storage.DiskFileManager;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -14,7 +15,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -62,8 +62,9 @@ class PostgresDatabaseManagerTest {
     void insertPersistsRowAndLocation() throws Exception {
         String key = "obj1";
 
-        databaseManager.insert(NAMESPACE, key, Map.of("user_id", "u1"), "photo.png", "png",
-                5, "abc123", "2024-01-01T00:00:00Z", "DISK", NAMESPACE + "/obj1_u1");
+        databaseManager.insert(NAMESPACE,
+                ObjectStatement.builder().key(key).kv("user_id", "u1").build(),
+                "photo.png", "png", 5, "abc123", "2024-01-01T00:00:00Z", "DISK", NAMESPACE + "/obj1_u1");
 
         assertEquals(NAMESPACE + "/obj1_u1", databaseManager.getStorageLocation(NAMESPACE, key));
 
@@ -88,10 +89,12 @@ class PostgresDatabaseManagerTest {
     void upsertInsertsThenReplacesRow() throws Exception {
         String key = "obj2";
 
-        databaseManager.insert(NAMESPACE, key, Map.of("user_id", "u2"), "a.txt", "txt",
-                1, "aaa", "2024-01-01T00:00:00Z", "DISK", NAMESPACE + "/obj2_a");
-        databaseManager.upsert(NAMESPACE, key, Map.of("user_id", "u2"), "b.txt", "txt",
-                2, "bbb", "2024-01-02T00:00:00Z", "DISK", NAMESPACE + "/obj2_b");
+        databaseManager.insert(NAMESPACE,
+                ObjectStatement.builder().key(key).kv("user_id", "u2").build(),
+                "a.txt", "txt", 1, "aaa", "2024-01-01T00:00:00Z", "DISK", NAMESPACE + "/obj2_a");
+        databaseManager.upsert(NAMESPACE,
+                ObjectStatement.builder().key(key).kv("user_id", "u2").build(),
+                "b.txt", "txt", 2, "bbb", "2024-01-02T00:00:00Z", "DISK", NAMESPACE + "/obj2_b");
 
         assertEquals(NAMESPACE + "/obj2_b", databaseManager.getStorageLocation(NAMESPACE, key));
 
@@ -111,7 +114,8 @@ class PostgresDatabaseManagerTest {
     @Test
     void insertThrowsOnUnknownKey() {
         assertThrows(IllegalArgumentException.class, () ->
-                databaseManager.insert(NAMESPACE, "obj3", Map.of("unknown_col", "v"),
+                databaseManager.insert(NAMESPACE,
+                        ObjectStatement.builder().key("obj3").kv("unknown_col", "v").build(),
                         "a.txt", "txt", 1, "x", "2024-01-01T00:00:00Z", "DISK", "loc"));
     }
 
@@ -125,7 +129,8 @@ class PostgresDatabaseManagerTest {
         byte[] data = "hello pg".getBytes();
         String key = "user123";
 
-        objectManager.update(key, "avatar.png", new ByteArrayInputStream(data), Map.of("user_id", "u1"));
+        objectManager.update(ObjectStatement.builder().key(key).kv("user_id", "u1").build(),
+                "avatar.png", new ByteArrayInputStream(data));
 
         Path stored = tempDir.resolve(NAMESPACE + "/user123_u1");
         assertTrue(Files.exists(stored));

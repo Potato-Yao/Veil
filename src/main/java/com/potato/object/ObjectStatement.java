@@ -5,33 +5,44 @@ import com.potato.database.QueryValue;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A database-agnostic statement over object metadata.
  *
- * <p>Describes <em>which rows</em> (via {@link Condition}s) and optionally <em>what
- * to change</em> (via {@link Assignment}s). The operation performed is chosen by the
- * {@link DatabaseManager} method it is passed to:
+ * <p>Describes <em>which rows</em> (via {@link Condition}s), <em>what to change</em>
+ * (via {@link Assignment}s) and <em>what to store</em> (via {@link #key()} and
+ * {@link #kv()}). The operation performed is chosen by the {@link DatabaseManager}
+ * method it is passed to:
  * {@link DatabaseManager#query(String, ObjectStatement)},
  * {@link DatabaseManager#count(String, ObjectStatement)},
+ * {@link DatabaseManager#insert(String, ObjectStatement, String, String, long, String, String, String, String)},
  * {@link DatabaseManager#executeUpdate(String, ObjectStatement)} or
  * {@link DatabaseManager#executeDelete(String, ObjectStatement)}.</p>
  *
- * <p>Conditions may reference the key column, additional key columns, or any metadata
+ * <p>The primary key value is set with {@link Builder#key(String)} and the values of
+ * the additional key columns with {@link Builder#kv(String, String)} (or
+ * {@link Builder#kv(Map)}), allowing a statement to express the values of an insert.
+ * Conditions may reference the key column, additional key columns, or any metadata
  * column; column names are validated by the executing {@link DatabaseManager}.</p>
  *
  * <p>Instances are created with {@link #builder()}.</p>
  */
 public class ObjectStatement {
+    private final String key;
+    private final Map<String, String> kv;
     private final List<Condition> conditions;
     private final List<Assignment> assignments;
     private final List<OrderBy> orderBys;
     private final Integer limit;
     private final Integer offset;
 
-    private ObjectStatement(List<Condition> conditions, List<Assignment> assignments,
-                            List<OrderBy> orderBys, Integer limit, Integer offset) {
+    private ObjectStatement(String key, Map<String, String> kv, List<Condition> conditions,
+                            List<Assignment> assignments, List<OrderBy> orderBys, Integer limit, Integer offset) {
+        this.key = key;
+        this.kv = kv == null ? Map.of() : Map.copyOf(kv);
         this.conditions = List.copyOf(conditions);
         this.assignments = List.copyOf(assignments);
         this.orderBys = List.copyOf(orderBys);
@@ -102,6 +113,12 @@ public class ObjectStatement {
          */
         UPDATE_BY_KEY,
         /**
+         * An insertion of a new row
+         * ({@link DatabaseManager#insert(String, ObjectStatement, String, String, long, String, String, String, String)}
+         * or {@link DatabaseManager#upsert(String, ObjectStatement, String, String, long, String, String, String, String)}).
+         */
+        INSERT,
+        /**
          * A deletion ({@link DatabaseManager#executeDelete(String, ObjectStatement)}).
          */
         DELETE
@@ -126,11 +143,28 @@ public class ObjectStatement {
                 }
             }
             case UPDATE_BY_KEY -> {
+                if (key == null) {
+                    throw new IllegalArgumentException("update by key requires a key");
+                }
                 if (assignments.isEmpty()) {
                     throw new IllegalArgumentException("update must set at least one column");
                 }
                 if (!conditions.isEmpty()) {
                     throw new IllegalArgumentException("update by key does not accept conditions");
+                }
+            }
+            case INSERT -> {
+                if (key == null || key.isEmpty()) {
+                    throw new IllegalArgumentException("insert requires a key");
+                }
+                if (!conditions.isEmpty()) {
+                    throw new IllegalArgumentException("insert does not accept conditions");
+                }
+                if (!assignments.isEmpty()) {
+                    throw new IllegalArgumentException("insert does not accept assignments");
+                }
+                if (!orderBys.isEmpty() || limit != null || offset != null) {
+                    throw new IllegalArgumentException("insert does not accept ordering or paging");
                 }
             }
             case DELETE -> {
@@ -167,6 +201,20 @@ public class ObjectStatement {
      * @param direction the sort direction
      */
     public record OrderBy(String column, Direction direction) {
+    }
+
+    /**
+     * @return the primary key value, or {@code null} if not set
+     */
+    public String key() {
+        return key;
+    }
+
+    /**
+     * @return the values of the additional key columns, or an empty map if none
+     */
+    public Map<String, String> kv() {
+        return kv;
     }
 
     /**
@@ -219,11 +267,49 @@ public class ObjectStatement {
      * <p>All conditions are AND-combined. An {@code offset} requires a {@code limit}.</p>
      */
     public static class Builder {
+        private String key;
+        private Map<String, String> kv = Map.of();
         private final List<Condition> conditions = new ArrayList<>();
         private final List<Assignment> assignments = new ArrayList<>();
         private final List<OrderBy> orderBys = new ArrayList<>();
         private Integer limit;
         private Integer offset;
+
+        /**
+         * Sets the primary key value of the object.
+         *
+         * @param key  the primary key
+         * @return this builder
+         */
+        public Builder key(String key) {
+            this.key = key;
+            return this;
+        }
+
+        /**
+         * Adds a single value for an additional key column.
+         *
+         * @param column  the additional key column name
+         * @param value   the value for that column
+         * @return this builder
+         */
+        public Builder kv(String column, String value) {
+            Map<String, String> merged = new HashMap<>(kv);
+            merged.put(column, value);
+            this.kv = merged;
+            return this;
+        }
+
+        /**
+         * Sets the values for the additional key columns.
+         *
+         * @param kv  the additional key column values, or {@code null}
+         * @return this builder
+         */
+        public Builder kv(Map<String, String> kv) {
+            this.kv = kv == null ? Map.of() : kv;
+            return this;
+        }
 
         /**
          * Adds a {@code long} comparison condition ({@code column <op> value}).
@@ -423,7 +509,7 @@ public class ObjectStatement {
             if (offset != null && limit == null) {
                 throw new IllegalStateException("offset requires a limit");
             }
-            return new ObjectStatement(conditions, assignments, orderBys, limit, offset);
+            return new ObjectStatement(key, kv, conditions, assignments, orderBys, limit, offset);
         }
 
         private Builder addCondition(String column, Op op, QueryValue... params) {

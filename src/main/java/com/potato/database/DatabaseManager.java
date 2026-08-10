@@ -118,12 +118,11 @@ public abstract class DatabaseManager {
      * Inserts a new metadata row for an object.
      *
      * <p>Fails if a row with the same key already exists. Use
-     * {@link #upsert(String, String, Map, String, String, long, String, String, String, String)}
+     * {@link #upsert(String, ObjectStatement, String, String, long, String, String, String, String)}
      * to replace an existing row.</p>
      *
      * @param namespace        the namespace the object belongs to
-     * @param key              the primary key of the object
-     * @param additionKeys     values for the additional key columns, or {@code null}
+     * @param statement        the statement carrying the primary key and additional key values
      * @param fileName         the stored file name
      * @param extension        the file extension
      * @param size             the size of the file in bytes
@@ -131,12 +130,12 @@ public abstract class DatabaseManager {
      * @param createdAt        ISO-8601 timestamp of creation
      * @param storageType      the type of storage (e.g. {@code "DISK"})
      * @param storageLocation  the location of the file within the file manager
-     * @throws IllegalArgumentException if {@code additionKeys} contains an unknown column
+     * @throws IllegalArgumentException if the statement does not fit an insert or contains an unknown column
      */
-    public void insert(String namespace, String key, Map<String, String> additionKeys,
+    public void insert(String namespace, ObjectStatement statement,
                        String fileName, String extension, long size, String md5,
                        String createdAt, String storageType, String storageLocation) {
-        executeInsert(namespace, key, additionKeys, fileName, extension, size, md5,
+        executeInsert(namespace, statement, fileName, extension, size, md5,
                 createdAt, storageType, storageLocation, false);
     }
 
@@ -147,8 +146,7 @@ public abstract class DatabaseManager {
      * in place.</p>
      *
      * @param namespace        the namespace the object belongs to
-     * @param key              the primary key of the object
-     * @param additionKeys     values for the additional key columns, or {@code null}
+     * @param statement        the statement carrying the primary key and additional key values
      * @param fileName         the stored file name
      * @param extension        the file extension
      * @param size             the size of the file in bytes
@@ -156,12 +154,12 @@ public abstract class DatabaseManager {
      * @param createdAt        ISO-8601 timestamp of creation
      * @param storageType      the type of storage (e.g. {@code "DISK"})
      * @param storageLocation  the location of the file within the file manager
-     * @throws IllegalArgumentException if {@code additionKeys} contains an unknown column
+     * @throws IllegalArgumentException if the statement does not fit an insert or contains an unknown column
      */
-    public void upsert(String namespace, String key, Map<String, String> additionKeys,
+    public void upsert(String namespace, ObjectStatement statement,
                        String fileName, String extension, long size, String md5,
                        String createdAt, String storageType, String storageLocation) {
-        executeInsert(namespace, key, additionKeys, fileName, extension, size, md5,
+        executeInsert(namespace, statement, fileName, extension, size, md5,
                 createdAt, storageType, storageLocation, true);
     }
 
@@ -280,11 +278,11 @@ public abstract class DatabaseManager {
             try (ResultSet resultSet = preparedStatement.executeQuery()) {
                 while (resultSet.next()) {
                     String key = resultSet.getString("key");
-                    Map<String, String> additionKeys = new HashMap<>();
+                    Map<String, String> kv = new HashMap<>();
                     for (String column : additionalKeyColumnNames) {
                         String value = resultSet.getString(column);
                         if (value != null) {
-                            additionKeys.put(column, value);
+                            kv.put(column, value);
                         }
                     }
                     ObjectMetadata metadata = new ObjectMetadata(
@@ -297,7 +295,7 @@ public abstract class DatabaseManager {
                             resultSet.getString("storage_type"),
                             resultSet.getString("storage_location"),
                             resultSet.getLong("access_count"));
-                    results.add(new ObjectReference(key, additionKeys, metadata));
+                    results.add(new ObjectReference(key, kv, metadata));
                 }
             }
         } catch (SQLException e) {
@@ -573,8 +571,7 @@ public abstract class DatabaseManager {
      * is appended with {@code ON CONFLICT(key) DO UPDATE} to replace existing rows.</p>
      *
      * @param namespace        the namespace the object belongs to
-     * @param key              the primary key of the object
-     * @param additionKeys     values for the additional key columns, or {@code null}
+     * @param statement        the statement carrying the primary key and additional key values
      * @param fileName         the stored file name
      * @param extension        the file extension
      * @param size             the size of the file in bytes
@@ -583,25 +580,24 @@ public abstract class DatabaseManager {
      * @param storageType      the type of storage (e.g. {@code "DISK"})
      * @param storageLocation  the location of the file within the file manager
      * @param overwrite        whether to replace an existing row with the same key
-     * @throws IllegalArgumentException if {@code additionKeys} contains an unknown column
+     * @throws IllegalArgumentException if the statement does not fit an insert or contains an unknown column
      */
-    private void executeInsert(String namespace, String key, Map<String, String> additionKeys,
+    private void executeInsert(String namespace, ObjectStatement statement,
                                String fileName, String extension, long size, String md5,
                                String createdAt, String storageType, String storageLocation,
                                boolean overwrite) {
+        statement.validateFor(ObjectStatement.Operation.INSERT);
         List<String> columns = new ArrayList<>();
         List<QueryValue> values = new ArrayList<>();
         columns.add("key");
-        values.add(new QueryValue.StringValue(key));
+        values.add(new QueryValue.StringValue(statement.key()));
 
-        if (additionKeys != null) {
-            for (Map.Entry<String, String> entry : additionKeys.entrySet()) {
-                if (!additionalKeyColumnNames.contains(entry.getKey())) {
-                    throw new IllegalArgumentException("Unknown key column: \"" + entry.getKey() + "\"");
-                }
-                columns.add(entry.getKey());
-                values.add(new QueryValue.StringValue(entry.getValue()));
+        for (Map.Entry<String, String> entry : statement.kv().entrySet()) {
+            if (!additionalKeyColumnNames.contains(entry.getKey())) {
+                throw new IllegalArgumentException("Unknown key column: \"" + entry.getKey() + "\"");
             }
+            columns.add(entry.getKey());
+            values.add(new QueryValue.StringValue(entry.getValue()));
         }
 
         columns.add("file_name");
@@ -632,11 +628,11 @@ public abstract class DatabaseManager {
         }
 
         try (Connection connection = getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql.toString())) {
+             PreparedStatement preparedStatement = connection.prepareStatement(sql.toString())) {
             for (int i = 0; i < values.size(); i++) {
-                values.get(i).bind(statement, i + 1);
+                values.get(i).bind(preparedStatement, i + 1);
             }
-            statement.executeUpdate();
+            preparedStatement.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
