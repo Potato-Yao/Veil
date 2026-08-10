@@ -467,6 +467,45 @@ class ObjectManagerTest {
         assertThrows(IllegalArgumentException.class, () -> withAssignment.validateFor(ObjectStatement.Operation.DELETE));
     }
 
+    @Test
+    void rejectsTraversalInPrimaryKey() {
+        List<String> evilKeys = List.of(
+                "../escape", "a/../../x", "/etc/passwd", "~/home", "-flag",
+                "C:evil", "a\\..\\x", "a//b", "a/", "..");
+        for (String evil : evilKeys) {
+            ObjectStatement statement = ObjectStatement.builder().key(evil).build();
+            assertThrows(IllegalArgumentException.class, () ->
+                    objectManager.put(statement, "a.txt", new ByteArrayInputStream("x".getBytes())), evil);
+            assertThrows(IllegalArgumentException.class, () -> objectManager.get(statement), evil);
+        }
+    }
+
+    @Test
+    void rejectsTraversalInAdditionalKeyValue() {
+        ObjectStatement statement = ObjectStatement.builder().key("ok").kv("user_id", "../../x").build();
+        assertThrows(IllegalArgumentException.class, () ->
+                objectManager.put(statement, "a.txt", new ByteArrayInputStream("x".getBytes())));
+    }
+
+    @Test
+    void rejectsTraversalInNamespace() {
+        List<String> evilNamespaces = List.of("../escape", "/abs", "~/home", "-flag");
+        for (String evil : evilNamespaces) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    ObjectManager.build(evil, databaseManager), evil);
+        }
+    }
+
+    @Test
+    void putAndGetLeaveNoFilesForRejectedKeys() throws Exception {
+        ObjectManager manager = ObjectManager.build("rejected_keys", databaseManager);
+        ObjectStatement statement = ObjectStatement.builder().key("a/../../x").build();
+        assertThrows(IllegalArgumentException.class, () ->
+                manager.put(statement, "a.txt", new ByteArrayInputStream("x".getBytes())));
+
+        assertEquals(List.of(), tempFilesUnder("rejected_keys"));
+    }
+
     private static FailingDatabaseManager failingManager() {
         HashMap<String, KeyType> keyColumns = new HashMap<>();
         keyColumns.put("user_id", KeyType.TEXT);

@@ -55,6 +55,7 @@ public class ObjectManager {
      * @throws IllegalArgumentException if the namespace is already taken
      */
     public static ObjectManager build(String namespace, DatabaseManager databaseManager) {
+        validateLocation(namespace);
         if (checkDuplicateNamespace(namespace)) {
             throw new IllegalArgumentException("The namespace \"" + namespace + "\" is already taken");
         }
@@ -335,7 +336,9 @@ public class ObjectManager {
                 }
             }
         }
-        return namespace + "/" + name;
+        String location = namespace + "/" + name;
+        validateLocation(location);
+        return location;
     }
 
     /**
@@ -357,5 +360,35 @@ public class ObjectManager {
      */
     public static boolean checkDuplicateNamespace(String namespace) {
         return namespaceList.contains(namespace);
+    }
+
+    /**
+     * Validates that a location stays within the storage scope.
+     *
+     * <p>Rejects absolute paths, drive prefixes, backslashes, parent-directory
+     * traversal, and segments starting with {@code ~} or {@code -} so that no file
+     * operation can reach outside the configured root.</p>
+     *
+     * @param location the relative location of the object
+     * @throws IllegalArgumentException if the location escapes the storage scope
+     */
+    private static void validateLocation(String location) {
+        if (location == null || location.isEmpty()) {
+            throw new IllegalArgumentException("Location must not be empty");
+        }
+        if (location.startsWith("/")) {
+            throw new IllegalArgumentException("Location must be relative: \"" + location + "\"");
+        }
+        if (location.contains("\\")) {
+            throw new IllegalArgumentException("Location must not contain backslashes: \"" + location + "\"");
+        }
+        for (String segment : location.split("/", -1)) {
+            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
+                throw new IllegalArgumentException("Invalid path segment in location: \"" + location + "\"");
+            }
+            if (segment.startsWith("~") || segment.startsWith("-") || segment.matches("[A-Za-z]:.*")) {
+                throw new IllegalArgumentException("Invalid path segment in location: \"" + location + "\"");
+            }
+        }
     }
 }
