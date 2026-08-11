@@ -24,8 +24,19 @@ public class ExampleMain {
                 .keyColumn("user_id", KeyType.TEXT)
                 .build();
 
-        // 3. Create an object manager for a namespace.
-        ObjectManager avatarManager = ObjectManager.build("avatar", databaseManager);
+        // 3. Create an object manager for a namespace, restricting accepted file types.
+        ObjectManager avatarManager = ObjectManager.builder()
+                .namespace("avatar")
+                .databaseManager(databaseManager)
+                .allowExtension("png", "jpg", ".jpeg")
+                .build();
+
+        // 3b. A text-mode manager skips the extension check entirely.
+        ObjectManager noteManager = ObjectManager.builder()
+                .namespace("notes")
+                .databaseManager(databaseManager)
+                .textMode(true)
+                .build();
 
         // 4. Store objects; each file lands at ./avatar/<key>_<user_id> and a metadata
         //    row is inserted into the veil_metadata_avatar table. A statement carries
@@ -36,6 +47,12 @@ public class ExampleMain {
         avatarManager.put(ObjectStatement.builder().key("user456").kv("user_id", "u1").build(),
                 "banner.png",
                 new ByteArrayInputStream("a longer banner image".getBytes(StandardCharsets.UTF_8)));
+
+        // 4b. Text mode stores any extension; a plain ObjectManager.build(...) keeps the
+        //     old behavior and accepts every file type.
+        ObjectStatement note = ObjectStatement.builder().key("greeting").kv("user_id", "u1").build();
+        noteManager.put(note, "hello.txt", new ByteArrayInputStream("hello".getBytes(StandardCharsets.UTF_8)));
+        System.out.println("Stored note: " + noteManager.checkExist(note));
 
         // 5. Retrieve an object: metadata plus a stream of its contents. Each get()
         //    records last_accessed_at and increments access_count.

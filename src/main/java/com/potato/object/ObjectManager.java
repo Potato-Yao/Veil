@@ -12,8 +12,11 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -31,7 +34,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * values of the additional key columns defined when building the
  * {@link DatabaseManager} (for example a {@code user_id}). Two objects with the same
  * primary key but different additional key values are distinct objects. Instances are
- * created with {@link #build(String, DatabaseManager)}.</p>
+ * created with {@link #build(String, DatabaseManager)} or configured with
+ * {@link #builder()} (allowed file types, text mode).</p>
  *
  * <p>Mutations of the same object are serialized through a bounded striped lock, so
  * concurrent {@link #put}, {@link #update}, {@link #remove} and {@link #get} calls
@@ -44,12 +48,17 @@ public class ObjectManager {
     private final FileManager mainStorageManager;
     private final FileManager cacheStorageManager;
     private final DatabaseManager databaseManager;
+    private final Set<String> allowedExtensions;
+    private final boolean textMode;
 
-    private ObjectManager(String namespace, FileManager mainStorageManager, FileManager cacheStorageManager, DatabaseManager databaseManager) {
+    private ObjectManager(String namespace, FileManager mainStorageManager, FileManager cacheStorageManager,
+                          DatabaseManager databaseManager, Set<String> allowedExtensions, boolean textMode) {
         this.namespace = namespace;
         this.mainStorageManager = mainStorageManager;
         this.cacheStorageManager = cacheStorageManager;
         this.databaseManager = databaseManager;
+        this.allowedExtensions = allowedExtensions;
+        this.textMode = textMode;
     }
 
     /**
@@ -64,20 +73,7 @@ public class ObjectManager {
      * @throws IllegalArgumentException if the namespace is already taken
      */
     public static ObjectManager build(String namespace, DatabaseManager databaseManager) {
-        validateLocation(namespace);
-        if (!namespaceList.add(namespace)) {
-            throw new IllegalArgumentException("The namespace \"" + namespace + "\" is already taken");
-        }
-
-        VeilConfiguration configuration = VeilConfiguration.getInstance();
-        try {
-            databaseManager.createTable(namespace);
-        } catch (SQLException e) {
-            namespaceList.remove(namespace);
-            throw new RuntimeException(e);
-        }
-
-        return new ObjectManager(namespace, configuration.getMainStorageManager(), configuration.getCacheManager(), databaseManager);
+        return builder().namespace(namespace).databaseManager(databaseManager).build();
     }
 
     /**
@@ -271,6 +267,7 @@ public class ObjectManager {
         String primaryKey = statement.key();
         Map<String, String> kv = statement.kv();
         validateKv(kv);
+        validateExtension(fileName);
         String location = buildLocation(primaryKey, kv);
 
         keyedLock.lock(location);
@@ -381,6 +378,27 @@ public class ObjectManager {
     }
 
     /**
+     * Checks the file name's extension against the configured allowlist.
+     *
+     * <p>In text mode, or when no extensions are configured, every extension is
+     * accepted. Otherwise the extension is compared case-insensitively against the
+     * allowed extensions.</p>
+     *
+     * @param fileName the file name to check
+     * @throws IllegalArgumentException if the extension is not allowed
+     */
+    private void validateExtension(String fileName) {
+        if (textMode || allowedExtensions.isEmpty()) {
+            return;
+        }
+        String extension = extractExtension(fileName).toLowerCase(Locale.ROOT);
+        if (!allowedExtensions.contains(extension)) {
+            throw new IllegalArgumentException("Extension \"" + extension
+                    + "\" is not allowed in namespace \"" + namespace + "\"");
+        }
+    }
+
+    /**
      * Checks whether a namespace has already been registered.
      *
      * @param namespace the namespace to check
@@ -417,6 +435,136 @@ public class ObjectManager {
             if (segment.startsWith("~") || segment.startsWith("-") || segment.matches("[A-Za-z]:.*")) {
                 throw new IllegalArgumentException("Invalid path segment in location: \"" + location + "\"");
             }
+        }
+    }
+
+    /**
+     * Starts building an {@link ObjectManager}.
+     *
+     * @return a new {@link Builder}
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Builder for configuring and constructing an {@link ObjectManager}.
+     *
+     * <p>The {@link #namespace(String)} and {@link #databaseManager(DatabaseManager)}
+     * are required. By default every file type is accepted; restrict accepted types
+     * with {@link #allowExtension(String...)}. Text mode ({@link #textMode(boolean)})
+     * disables the extension check entirely.</p>
+     */
+    public static class Builder {
+        private String namespace;
+        private DatabaseManager databaseManager;
+        private final Set<String> allowedExtensions = new HashSet<>();
+        private boolean textMode;
+
+        /**
+         * Sets the namespace to manage.
+         *
+         * @param namespace  the namespace to manage; must be unique
+         * @return this builder
+         */
+        public Builder namespace(String namespace) {
+            this.namespace = namespace;
+            return this;
+        }
+
+        /**
+         * Sets the database manager used for metadata persistence.
+         *
+         * @param databaseManager  the database manager to use
+         * @return this builder
+         */
+        public Builder databaseManager(DatabaseManager databaseManager) {
+            this.databaseManager = databaseManager;
+            return this;
+        }
+
+        /**
+         * Allows the given file extensions.
+         *
+         * <p>Extensions are compared case-insensitively without the leading dot, so
+         * entries like {@code "png"} or {@code ".PNG"} both accept {@code photo.png}.
+         * When no extensions are configured, every extension is accepted.</p>
+         *
+         * @param extensions  the extensions to allow
+         * @return this builder
+         */
+        public Builder allowExtension(String... extensions) {
+            return allowExtension(List.of(extensions));
+        }
+
+        /**
+         * Allows the given file extensions.
+         *
+         * <p>Extensions are compared case-insensitively without the leading dot, so
+         * entries like {@code "png"} or {@code ".PNG"} both accept {@code photo.png}.
+         * When no extensions are configured, every extension is accepted.</p>
+         *
+         * @param extensions  the extensions to allow
+         * @return this builder
+         */
+        public Builder allowExtension(Collection<String> extensions) {
+            for (String extension : extensions) {
+                if (extension == null) {
+                    continue;
+                }
+                allowedExtensions.add(extension.toLowerCase(Locale.ROOT).replaceFirst("^\\.", ""));
+            }
+            return this;
+        }
+
+        /**
+         * Puts the manager into text mode.
+         *
+         * <p>In text mode the manager manages text and skips the extension check, even
+         * if allowed extensions have been configured.</p>
+         *
+         * @param textMode  whether to manage text
+         * @return this builder
+         */
+        public Builder textMode(boolean textMode) {
+            this.textMode = textMode;
+            return this;
+        }
+
+        /**
+         * Builds the configured {@link ObjectManager}.
+         *
+         * <p>Registers the namespace and creates its metadata table in the database.
+         * Each namespace may be built only once per JVM.</p>
+         *
+         * @return a new {@link ObjectManager} bound to the namespace
+         * @throws IllegalStateException if no namespace or database manager is set
+         * @throws IllegalArgumentException if the namespace is already taken
+         */
+        public ObjectManager build() {
+            if (namespace == null) {
+                throw new IllegalStateException("ObjectManager requires a namespace");
+            }
+            if (databaseManager == null) {
+                throw new IllegalStateException("ObjectManager requires a database manager");
+            }
+
+            validateLocation(namespace);
+            if (!namespaceList.add(namespace)) {
+                throw new IllegalArgumentException("The namespace \"" + namespace + "\" is already taken");
+            }
+
+            VeilConfiguration configuration = VeilConfiguration.getInstance();
+            try {
+                databaseManager.createTable(namespace);
+            } catch (SQLException e) {
+                namespaceList.remove(namespace);
+                throw new RuntimeException(e);
+            }
+
+            Set<String> extensions = Set.copyOf(allowedExtensions);
+            return new ObjectManager(namespace, configuration.getMainStorageManager(),
+                    configuration.getCacheManager(), databaseManager, extensions, textMode);
         }
     }
 }

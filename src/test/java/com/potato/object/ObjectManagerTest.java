@@ -561,6 +561,119 @@ class ObjectManagerTest {
         assertEquals(List.of(), tempFilesUnder("rejected_keys"));
     }
 
+    @Test
+    void builderRequiresNamespaceAndDatabaseManager() {
+        assertThrows(IllegalStateException.class, () -> ObjectManager.builder().build());
+        assertThrows(IllegalStateException.class, () ->
+                ObjectManager.builder().namespace("no_db").build());
+        assertThrows(IllegalStateException.class, () ->
+                ObjectManager.builder().databaseManager(databaseManager).build());
+    }
+
+    @Test
+    void putRejectsDisallowedExtension() throws Exception {
+        ObjectManager manager = ObjectManager.builder()
+                .namespace("filtered")
+                .databaseManager(databaseManager)
+                .allowExtension("png", "jpg")
+                .build();
+
+        assertThrows(IllegalArgumentException.class, () ->
+                manager.put(key("f1", "u1"), "doc.txt", new ByteArrayInputStream("x".getBytes())));
+
+        assertFalse(manager.checkExist(key("f1", "u1")));
+        assertTrue(tempFilesUnder("filtered").isEmpty());
+    }
+
+    @Test
+    void putAcceptsAllowedExtension() throws Exception {
+        ObjectManager manager = ObjectManager.builder()
+                .namespace("filtered_ok")
+                .databaseManager(databaseManager)
+                .allowExtension("png")
+                .build();
+
+        manager.put(key("f2", "u1"), "photo.png", new ByteArrayInputStream("data".getBytes()));
+
+        assertTrue(manager.checkExist(key("f2", "u1")));
+        try (ObjectData object = manager.get(key("f2", "u1"))) {
+            assertEquals("png", object.metadata().fileExtension());
+        }
+    }
+
+    @Test
+    void defaultAllowsAnyExtension() throws Exception {
+        ObjectManager manager = ObjectManager.builder()
+                .namespace("filtered_any")
+                .databaseManager(databaseManager)
+                .build();
+
+        manager.put(key("f3", "u1"), "anything.bin", new ByteArrayInputStream("data".getBytes()));
+        assertTrue(manager.checkExist(key("f3", "u1")));
+    }
+
+    @Test
+    void extensionMatchingIsCaseInsensitiveAndStripsDots() throws Exception {
+        ObjectManager manager = ObjectManager.builder()
+                .namespace("filtered_case")
+                .databaseManager(databaseManager)
+                .allowExtension(".PNG", "Jpg")
+                .build();
+
+        manager.put(key("f4", "u1"), "photo.png", new ByteArrayInputStream("png".getBytes()));
+        manager.put(key("f4", "u2"), "photo.JPG", new ByteArrayInputStream("jpg".getBytes()));
+
+        assertTrue(manager.checkExist(key("f4", "u1")));
+        assertTrue(manager.checkExist(key("f4", "u2")));
+        assertThrows(IllegalArgumentException.class, () ->
+                manager.put(key("f4", "u3"), "photo.gif", new ByteArrayInputStream("gif".getBytes())));
+    }
+
+    @Test
+    void updateEnforcesExtensionFilter() throws Exception {
+        ObjectManager manager = ObjectManager.builder()
+                .namespace("filtered_update")
+                .databaseManager(databaseManager)
+                .allowExtension("txt")
+                .build();
+
+        manager.put(key("f5", "u1"), "a.txt", new ByteArrayInputStream("old".getBytes()));
+        assertThrows(IllegalArgumentException.class, () ->
+                manager.update(key("f5", "u1"), "b.png", new ByteArrayInputStream("new".getBytes())));
+
+        try (ObjectData object = manager.get(key("f5", "u1"))) {
+            assertArrayEquals("old".getBytes(), object.stream().readAllBytes());
+        }
+    }
+
+    @Test
+    void textModeSkipsExtensionCheck() throws Exception {
+        ObjectManager manager = ObjectManager.builder()
+                .namespace("text")
+                .databaseManager(databaseManager)
+                .textMode(true)
+                .build();
+
+        manager.put(key("t1", "u1"), "note.txt", new ByteArrayInputStream("hello".getBytes()));
+        manager.put(key("t1", "u2"), "data.xyz", new ByteArrayInputStream("world".getBytes()));
+
+        assertTrue(manager.checkExist(key("t1", "u1")));
+        assertTrue(manager.checkExist(key("t1", "u2")));
+    }
+
+    @Test
+    void textModeWinsOverAllowedExtensions() throws Exception {
+        ObjectManager manager = ObjectManager.builder()
+                .namespace("text_filtered")
+                .databaseManager(databaseManager)
+                .allowExtension("txt")
+                .textMode(true)
+                .build();
+
+        manager.put(key("t2", "u1"), "data.bin", new ByteArrayInputStream("bytes".getBytes()));
+        assertTrue(manager.checkExist(key("t2", "u1")));
+    }
+
     private static FailingDatabaseManager failingManager() {
         HashMap<String, KeyType> keyColumns = new HashMap<>();
         keyColumns.put("user_id", KeyType.TEXT);
