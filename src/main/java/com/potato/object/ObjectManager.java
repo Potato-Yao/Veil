@@ -27,9 +27,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * storage location) in a {@link DatabaseManager} table named
  * {@code veil_metadata_<namespace>}.</p>
  *
- * <p>Objects are addressed by a primary key, optionally combined with additional key
- * columns defined when building the {@link DatabaseManager} (for example a
- * {@code user_id}). Instances are created with {@link #build(String, DatabaseManager)}.</p>
+ * <p>Objects are addressed by an immutable identity: the primary key together with the
+ * values of the additional key columns defined when building the
+ * {@link DatabaseManager} (for example a {@code user_id}). Two objects with the same
+ * primary key but different additional key values are distinct objects. Instances are
+ * created with {@link #build(String, DatabaseManager)}.</p>
  *
  * <p>Mutations of the same object are serialized through a bounded striped lock, so
  * concurrent {@link #put}, {@link #update}, {@link #remove} and {@link #get} calls
@@ -79,34 +81,38 @@ public class ObjectManager {
     }
 
     /**
-     * Stores a new object under the given primary key.
+     * Stores a new object under the given identity.
      *
-     * <p>If an object with the same primary key already exists, the store fails with an
-     * exception. Use {@link #update(ObjectStatement, String, InputStream)} to replace
-     * an existing object.</p>
+     * <p>If an object with the same identity (primary key and additional key values)
+     * already exists, the store fails with an exception. Use
+     * {@link #update(ObjectStatement, String, InputStream)} to replace an existing
+     * object.</p>
      *
      * @param statement the statement carrying the primary key (and additional key values)
      * @param fileName  original file name; its extension is stored as metadata
      * @param source    stream containing the object data
-     * @throws IllegalArgumentException if the statement does not fit an insert or
-     *                                  contains an unknown key column
+     * @throws IllegalArgumentException if the statement does not fit an insert, does not
+     *                                  carry the full identity, or contains an unknown
+     *                                  key column
      */
     public void put(ObjectStatement statement, String fileName, InputStream source) {
         store(statement, fileName, source, false);
     }
 
     /**
-     * Stores an object, replacing any existing object with the same primary key.
+     * Stores an object, replacing any existing object with the same identity.
      *
-     * <p>When the resolved storage location differs from the previous one, the old file
-     * is deleted from storage before the new data is written. Access statistics are
-     * preserved across the replacement.</p>
+     * <p>The identity of an object is its primary key together with all additional key
+     * column values and is immutable: {@code update} replaces the content and metadata
+     * of the object with that identity. If no object with the given identity exists, a
+     * new object is created instead. Access statistics are preserved across the
+     * replacement.</p>
      *
      * @param statement the statement carrying the primary key (and additional key values)
      * @param fileName  original file name; its extension is stored as metadata
      * @param source    stream containing the object data
-     * @throws IllegalArgumentException if the statement does not fit an insert or
-     *                                  contains an unknown key column
+     * @throws IllegalArgumentException if the statement does not carry the full identity
+     *                                  or contains an unknown key column
      */
     public void update(ObjectStatement statement, String fileName, InputStream source) {
         store(statement, fileName, source, true);
@@ -284,14 +290,14 @@ public class ObjectManager {
      * <p>The operation is atomic: new content is staged in a temporary file, the
      * metadata row is committed, and only then is the staged file renamed into place.
      * If the metadata write fails, the temporary file is removed and any previous
-     * object is left untouched. When {@code overwrite} is {@code true}, an object
-     * previously stored at a different location is deleted only after the replacement
-     * has been committed.</p>
+     * object is left untouched. The storage location is derived entirely from the
+     * object's identity, which is immutable, so a replacement always writes to the
+     * same location.</p>
      *
      * @param statement the statement carrying the primary key and additional key values
      * @param fileName  original file name
      * @param source    stream containing the object data
-     * @param overwrite whether to replace an existing object with the same key
+     * @param overwrite whether to replace an existing object with the same identity
      */
     private void store(ObjectStatement statement, String fileName, InputStream source, boolean overwrite) {
         statement.validateFor(ObjectStatement.Operation.INSERT);
@@ -302,10 +308,7 @@ public class ObjectManager {
 
         keyedLock.lock(location);
         try {
-            String existingLocation = null;
-            if (overwrite) {
-                existingLocation = databaseManager.getStorageLocation(namespace, statement);
-            } else if (databaseManager.getStorageLocation(namespace, statement) != null) {
+            if (!overwrite && databaseManager.getStorageLocation(namespace, statement) != null) {
                 throw new IllegalArgumentException("Object \"" + primaryKey + "\" already exists in namespace \"" + namespace + "\"");
             }
 
@@ -324,9 +327,6 @@ public class ObjectManager {
                 databaseManager.upsertMetadata(namespace, statement, metadata, overwrite);
 
                 mainStorageManager.rename(tempLocation, location);
-                if (existingLocation != null && !existingLocation.equals(location)) {
-                    mainStorageManager.delete(existingLocation);
-                }
             } catch (NoSuchAlgorithmException e) {
                 throw new RuntimeException(e);
             } catch (RuntimeException e) {
@@ -362,18 +362,26 @@ public class ObjectManager {
     }
 
     /**
-     * Ensures all names in {@code kv} are defined additional key columns.
+     * Ensures {@code kv} contains exactly the additional key column values: every name
+     * must be a defined additional key column, and every additional key column must be
+     * present because it is part of the object's immutable identity.
      *
      * @param kv the additional key values to validate, or {@code null}
-     * @throws IllegalArgumentException if a key is not a known additional key column
+     * @throws IllegalArgumentException if a key is not a known additional key column, or
+     *                                  a defined additional key column is missing
      */
     private void validateKv(Map<String, String> kv) {
         if (kv == null) {
-            return;
+            throw new IllegalArgumentException("Statement must carry the additional key column values");
         }
         for (String name : kv.keySet()) {
             if (!databaseManager.getAdditionalKeyColumnNames().contains(name)) {
                 throw new IllegalArgumentException("Unknown key column: \"" + name + "\"");
+            }
+        }
+        for (String column : databaseManager.getAdditionalKeyColumnNames()) {
+            if (!kv.containsKey(column)) {
+                throw new IllegalArgumentException("Statement must carry a value for key column \"" + column + "\"");
             }
         }
     }
@@ -388,6 +396,9 @@ public class ObjectManager {
      * @return the storage location relative to the file manager root
      */
     private String buildLocation(String primaryKey, Map<String, String> kv) {
+        if (primaryKey == null || primaryKey.isEmpty()) {
+            throw new IllegalArgumentException("Statement must carry a key");
+        }
         StringBuilder name = new StringBuilder(primaryKey);
         if (kv != null) {
             for (String column : databaseManager.getAdditionalKeyColumnNames()) {

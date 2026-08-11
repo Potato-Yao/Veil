@@ -69,7 +69,8 @@ class PostgresDatabaseManagerTest {
                         null, "DISK", NAMESPACE + "/obj1_u1", 0));
 
         assertEquals(NAMESPACE + "/obj1_u1",
-                databaseManager.getStorageLocation(NAMESPACE, ObjectStatement.builder().key(key).build()));
+                databaseManager.getStorageLocation(NAMESPACE,
+                        ObjectStatement.builder().key(key).kv("user_id", "u1").build()));
 
         try (var connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
@@ -102,7 +103,8 @@ class PostgresDatabaseManagerTest {
                         null, "DISK", NAMESPACE + "/obj2_b", 0));
 
         assertEquals(NAMESPACE + "/obj2_b",
-                databaseManager.getStorageLocation(NAMESPACE, ObjectStatement.builder().key(key).build()));
+                databaseManager.getStorageLocation(NAMESPACE,
+                        ObjectStatement.builder().key(key).kv("user_id", "u2").build()));
 
         try (var connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
@@ -128,7 +130,8 @@ class PostgresDatabaseManagerTest {
 
     @Test
     void getStorageLocationReturnsNullForMissingKey() {
-        assertNull(databaseManager.getStorageLocation(NAMESPACE, ObjectStatement.builder().key("does-not-exist").build()));
+        assertNull(databaseManager.getStorageLocation(NAMESPACE,
+                ObjectStatement.builder().key("does-not-exist").kv("user_id", "u1").build()));
     }
 
     @Test
@@ -143,6 +146,42 @@ class PostgresDatabaseManagerTest {
         assertTrue(Files.exists(stored));
         assertArrayEquals(data, Files.readAllBytes(stored));
         assertEquals(NAMESPACE + "/user123_u1",
-                databaseManager.getStorageLocation(NAMESPACE, ObjectStatement.builder().key(key).build()));
+                databaseManager.getStorageLocation(NAMESPACE,
+                        ObjectStatement.builder().key(key).kv("user_id", "u1").build()));
+    }
+
+    @Test
+    void sameKeyWithDifferentAdditionalKeyValuesCoexist() throws Exception {
+        databaseManager.insert(NAMESPACE,
+                ObjectStatement.builder().key("same").kv("user_id", "u1").build(),
+                new ObjectMetadata("a.txt", "txt", 1, "aaa", "2024-01-01T00:00:00Z",
+                        null, "DISK", NAMESPACE + "/same_u1", 0));
+        databaseManager.insert(NAMESPACE,
+                ObjectStatement.builder().key("same").kv("user_id", "u2").build(),
+                new ObjectMetadata("b.txt", "txt", 2, "bbb", "2024-01-01T00:00:00Z",
+                        null, "DISK", NAMESPACE + "/same_u2", 0));
+
+        assertEquals(NAMESPACE + "/same_u1",
+                databaseManager.getStorageLocation(NAMESPACE,
+                        ObjectStatement.builder().key("same").kv("user_id", "u1").build()));
+        assertEquals(NAMESPACE + "/same_u2",
+                databaseManager.getStorageLocation(NAMESPACE,
+                        ObjectStatement.builder().key("same").kv("user_id", "u2").build()));
+    }
+
+    @Test
+    void lookupRequiresMatchingAdditionalKeyValues() {
+        databaseManager.insert(NAMESPACE,
+                ObjectStatement.builder().key("addr").kv("user_id", "u1").build(),
+                new ObjectMetadata("a.txt", "txt", 1, "aaa", "2024-01-01T00:00:00Z",
+                        null, "DISK", NAMESPACE + "/addr_u1", 0));
+
+        assertNull(databaseManager.getStorageLocation(NAMESPACE,
+                ObjectStatement.builder().key("addr").kv("user_id", "other").build()));
+        assertNull(databaseManager.getMetadata(NAMESPACE,
+                ObjectStatement.builder().key("addr").kv("user_id", "other").build()));
+        assertThrows(IllegalArgumentException.class, () ->
+                databaseManager.getStorageLocation(NAMESPACE,
+                        ObjectStatement.builder().key("addr").build()));
     }
 }

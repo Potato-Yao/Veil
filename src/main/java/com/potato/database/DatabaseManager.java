@@ -23,7 +23,9 @@ import java.util.Map;
  * <p>Each namespace gets a table named {@code veil_metadata_<namespace>} holding a
  * primary {@code key} column, any additional key columns (defined via
  * {@link Builder#keyColumn(String, KeyType)}), and standard metadata columns such as
- * file name, extension, size, MD5, timestamps and storage location.</p>
+ * file name, extension, size, MD5, timestamps and storage location. The primary key
+ * spans the {@code key} column and every additional key column, so an object's
+ * identity is the composite of all of them and is enforced as a database constraint.</p>
  *
  * <p>Concrete implementations are built with {@link #builder()}; see
  * {@link SqliteDatabaseManager} and {@link PostgresDatabaseManager} for the SQLite- and
@@ -33,6 +35,7 @@ public abstract class DatabaseManager {
     protected final DataSource dataSource;
     protected final ArrayList<String> keyColumns;
     protected final ArrayList<String> additionalKeyColumnNames;
+    protected final Map<String, KeyType> keyTypes;
     protected final ArrayList<String> metadataColumns;
     protected final ArrayList<String> metadataColumnNames;
 
@@ -40,7 +43,7 @@ public abstract class DatabaseManager {
         this.dataSource = dataSource;
 
         this.keyColumns = new ArrayList<>();
-        this.keyColumns.add("key TEXT PRIMARY KEY");
+        this.keyColumns.add("key TEXT NOT NULL");
 
         this.additionalKeyColumnNames = new ArrayList<>();
         if (keyColumns != null) {
@@ -49,6 +52,7 @@ public abstract class DatabaseManager {
                 this.additionalKeyColumnNames.add(name);
             });
         }
+        this.keyTypes = keyColumns == null ? Map.of() : Map.copyOf(keyColumns);
 
         this.metadataColumns = new ArrayList<>();
         this.metadataColumnNames = new ArrayList<>();
@@ -99,11 +103,16 @@ public abstract class DatabaseManager {
 
     /**
      * @return the full column definitions for a metadata table, joining the key columns
-     *         and the metadata columns
+     *         and the metadata columns, with a composite primary key over the primary key
+     *         and all additional key columns
      */
     private String columnDefinitions() {
         List<String> columns = new ArrayList<>(keyColumns);
         columns.addAll(metadataColumns);
+        List<String> primaryKey = new ArrayList<>();
+        primaryKey.add("key");
+        primaryKey.addAll(additionalKeyColumnNames);
+        columns.add("PRIMARY KEY (" + String.join(", ", primaryKey) + ")");
         return String.join(", ", columns);
     }
 
@@ -148,20 +157,23 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Returns the storage location of the object with the given primary key.
+     * Returns the storage location of the object with the given identity.
      *
      * @param namespace  the namespace of the object
-     * @param statement  the statement carrying the primary key
+     * @param statement  the statement carrying the full identity (primary key and
+     *                   additional key values)
      * @return the storage location, or {@code null} if no such object exists
-     * @throws IllegalArgumentException if the statement has no key
+     * @throws IllegalArgumentException if the statement does not carry the full identity
      */
     public String getStorageLocation(String namespace, ObjectStatement statement) {
-        requireKey(statement);
+        requireIdentity(statement);
+        List<QueryValue> params = new ArrayList<>();
+        String where = String.join(" AND ", buildKeyConditions(statement, params));
         String sql = "SELECT storage_location FROM " + Config.DATABASE_PREFIX + "_" + namespace
-                + " WHERE key = ?";
+                + " WHERE " + where;
         try (Connection connection = getConnection();
              PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-            preparedStatement.setString(1, statement.key());
+            bindParameters(preparedStatement, params);
             try (ResultSet resultSet = preparedStatement.executeQuery()) {
                 return resultSet.next() ? resultSet.getString("storage_location") : null;
             }
@@ -171,21 +183,24 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Returns the metadata of the object with the given primary key.
+     * Returns the metadata of the object with the given identity.
      *
      * @param namespace  the namespace of the object
-     * @param statement  the statement carrying the primary key
+     * @param statement  the statement carrying the full identity (primary key and
+     *                   additional key values)
      * @return the object's metadata, or {@code null} if no such object exists
-     * @throws IllegalArgumentException if the statement has no key
+     * @throws IllegalArgumentException if the statement does not carry the full identity
      */
     public ObjectMetadata getMetadata(String namespace, ObjectStatement statement) {
-        requireKey(statement);
+        requireIdentity(statement);
+        List<QueryValue> params = new ArrayList<>();
+        String where = String.join(" AND ", buildKeyConditions(statement, params));
         String sql = "SELECT file_name, file_extension, file_size, md5, created_at, last_accessed_at,"
                 + " storage_type, storage_location, access_count FROM " + Config.DATABASE_PREFIX + "_" + namespace
-                + " WHERE key = ?";
+                + " WHERE " + where;
         try (Connection connection = getConnection();
              PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-            preparedStatement.setString(1, statement.key());
+            bindParameters(preparedStatement, params);
             try (ResultSet resultSet = preparedStatement.executeQuery()) {
                 if (!resultSet.next()) {
                     return null;
@@ -207,19 +222,22 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Deletes the metadata row of the object with the given primary key.
+     * Deletes the metadata row of the object with the given identity.
      *
      * @param namespace  the namespace of the object
-     * @param statement  the statement carrying the primary key
+     * @param statement  the statement carrying the full identity (primary key and
+     *                   additional key values)
      * @return {@code true} if a row was removed, {@code false} if no such object exists
-     * @throws IllegalArgumentException if the statement has no key
+     * @throws IllegalArgumentException if the statement does not carry the full identity
      */
     public boolean delete(String namespace, ObjectStatement statement) {
-        requireKey(statement);
-        String sql = "DELETE FROM " + Config.DATABASE_PREFIX + "_" + namespace + " WHERE key = ?";
+        requireIdentity(statement);
+        List<QueryValue> params = new ArrayList<>();
+        String where = String.join(" AND ", buildKeyConditions(statement, params));
+        String sql = "DELETE FROM " + Config.DATABASE_PREFIX + "_" + namespace + " WHERE " + where;
         try (Connection connection = getConnection();
              PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-            preparedStatement.setString(1, statement.key());
+            bindParameters(preparedStatement, params);
             return preparedStatement.executeUpdate() > 0;
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -227,21 +245,24 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Records access to the object with the given primary key, updating its last access
+     * Records access to the object with the given identity, updating its last access
      * timestamp and incrementing its access count.
      *
      * @param namespace  the namespace of the object
-     * @param statement  the statement carrying the primary key
-     * @throws IllegalArgumentException if the statement has no key
+     * @param statement  the statement carrying the full identity (primary key and
+     *                   additional key values)
+     * @throws IllegalArgumentException if the statement does not carry the full identity
      */
     public void updateAccess(String namespace, ObjectStatement statement) {
-        requireKey(statement);
+        requireIdentity(statement);
+        List<QueryValue> params = new ArrayList<>();
+        params.add(new QueryValue.StringValue(Instant.now().toString()));
+        String where = String.join(" AND ", buildKeyConditions(statement, params));
         String sql = "UPDATE " + Config.DATABASE_PREFIX + "_" + namespace
-                + " SET last_accessed_at = ?, access_count = access_count + 1 WHERE key = ?";
+                + " SET last_accessed_at = ?, access_count = access_count + 1 WHERE " + where;
         try (Connection connection = getConnection();
              PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-            preparedStatement.setString(1, Instant.now().toString());
-            preparedStatement.setString(2, statement.key());
+            bindParameters(preparedStatement, params);
             preparedStatement.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -353,8 +374,8 @@ public abstract class DatabaseManager {
 
         List<String> conditions = new ArrayList<>();
         if (byKey) {
-            conditions.add("key = ?");
-            params.add(new QueryValue.StringValue(statement.key()));
+            requireIdentity(statement);
+            conditions.addAll(buildKeyConditions(statement, params));
         }
         conditions.addAll(buildConditions(statement, params));
 
@@ -545,6 +566,63 @@ public abstract class DatabaseManager {
     }
 
     /**
+     * Ensures the statement carries the full identity of an object: a non-empty primary
+     * key and a value for every additional key column.
+     *
+     * @param statement  the statement to validate
+     * @throws IllegalArgumentException if the statement is missing the primary key or any
+     *                                  additional key column value
+     */
+    private void requireIdentity(ObjectStatement statement) {
+        requireKey(statement);
+        for (String column : additionalKeyColumnNames) {
+            if (statement.kv().get(column) == null) {
+                throw new IllegalArgumentException("Statement must carry a value for key column \"" + column + "\"");
+            }
+        }
+    }
+
+    /**
+     * Builds the equality conditions matching the full identity of an object, appending
+     * their parameters to the given list.
+     *
+     * @param statement  the statement carrying the full identity
+     * @param params     the list to append the identity parameters to
+     * @return the rendered identity conditions, one per key column
+     */
+    private List<String> buildKeyConditions(ObjectStatement statement, List<QueryValue> params) {
+        List<String> conditions = new ArrayList<>();
+        conditions.add("key = ?");
+        params.add(new QueryValue.StringValue(statement.key()));
+        for (String column : additionalKeyColumnNames) {
+            conditions.add(column + " = ?");
+            params.add(keyValue(column, statement.kv().get(column)));
+        }
+        return conditions;
+    }
+
+    /**
+     * Converts a key column value from its string form into a {@link QueryValue} bound
+     * with the column's declared type.
+     *
+     * @param column  the additional key column name
+     * @param value   the value as a string
+     * @return the typed query value
+     * @throws IllegalArgumentException if the value does not fit the column's type
+     */
+    private QueryValue keyValue(String column, String value) {
+        if (keyTypes.get(column) == KeyType.LONG) {
+            try {
+                return new QueryValue.LongValue(Long.parseLong(value));
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(
+                        "Key column \"" + column + "\" expects a long, got: \"" + value + "\"", e);
+            }
+        }
+        return new QueryValue.StringValue(value);
+    }
+
+    /**
      * A rendered query: its SQL and the parameters bound to it, in order.
      *
      * @param sql     the SQL statement
@@ -558,32 +636,33 @@ public abstract class DatabaseManager {
      *
      * <p>Dynamically assembles the column list from the additional key columns and the
      * standard metadata columns. When {@code overwrite} is {@code false}, the insert
-     * fails if a row with the same key already exists. When {@code overwrite} is
-     * {@code true}, the statement is appended with {@code ON CONFLICT(key) DO UPDATE}
-     * to replace the existing row's metadata columns while access statistics are left
-     * untouched. The metadata is persisted exactly as given, including access statistics
-     * and timestamps; pass an {@link ObjectMetadata} with {@code null} last-access and
-     * zero access count for a fresh insert.</p>
+     * fails if a row with the same identity already exists. When {@code overwrite} is
+     * {@code true}, the statement is appended with {@code ON CONFLICT (key, ...)} over
+     * the full identity to replace the existing row's metadata columns; key columns and
+     * access statistics are left untouched because the identity is immutable.</p>
      *
      * @param namespace  the namespace the object belongs to
      * @param statement  the statement carrying the primary key and additional key values
      * @param metadata   the metadata of the object to persist
-     * @param overwrite  whether to replace an existing row with the same key
-     * @throws IllegalArgumentException if the statement does not fit an insert or contains an unknown column
+     * @param overwrite  whether to replace an existing row with the same identity
+     * @throws IllegalArgumentException if the statement does not carry the full identity or contains an unknown column
      */
     public void upsertMetadata(String namespace, ObjectStatement statement, ObjectMetadata metadata, boolean overwrite) {
         statement.validateFor(ObjectStatement.Operation.INSERT);
-        List<String> columns = new ArrayList<>();
-        List<QueryValue> values = new ArrayList<>();
-        columns.add("key");
-        values.add(new QueryValue.StringValue(statement.key()));
-
+        requireIdentity(statement);
         for (Map.Entry<String, String> entry : statement.kv().entrySet()) {
             if (!additionalKeyColumnNames.contains(entry.getKey())) {
                 throw new IllegalArgumentException("Unknown key column: \"" + entry.getKey() + "\"");
             }
-            columns.add(entry.getKey());
-            values.add(new QueryValue.StringValue(entry.getValue()));
+        }
+
+        List<String> columns = new ArrayList<>();
+        List<QueryValue> values = new ArrayList<>();
+        columns.add("key");
+        values.add(new QueryValue.StringValue(statement.key()));
+        for (String column : additionalKeyColumnNames) {
+            columns.add(column);
+            values.add(keyValue(column, statement.kv().get(column)));
         }
 
         columns.add("file_name");
@@ -611,14 +690,17 @@ public abstract class DatabaseManager {
 
         if (overwrite) {
             List<String> updates = new ArrayList<>();
-            for (int i = 1; i < columns.size(); i++) {
-                String column = columns.get(i);
+            for (String column : metadataColumnNames) {
                 if (column.equals("last_accessed_at") || column.equals("access_count")) {
                     continue;
                 }
                 updates.add(column + " = excluded." + column);
             }
-            sql.append(" ON CONFLICT(key) DO UPDATE SET ").append(String.join(", ", updates));
+            List<String> conflictTarget = new ArrayList<>();
+            conflictTarget.add("key");
+            conflictTarget.addAll(additionalKeyColumnNames);
+            sql.append(" ON CONFLICT (").append(String.join(", ", conflictTarget))
+                    .append(") DO UPDATE SET ").append(String.join(", ", updates));
         }
 
         try (Connection connection = getConnection();

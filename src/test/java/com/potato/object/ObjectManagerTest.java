@@ -132,7 +132,7 @@ class ObjectManagerTest {
     }
 
     @Test
-    void updateDeletesOldFileWhenLocationChanges() throws Exception {
+    void updateWithDifferentIdentityCreatesSeparateObject() throws Exception {
         byte[] first = "old file".getBytes();
         byte[] second = "new file".getBytes();
         String primaryKey = "obj4";
@@ -141,8 +141,10 @@ class ObjectManagerTest {
         objectManager.put(key(primaryKey, "u4"), fileName, new ByteArrayInputStream(first));
         objectManager.update(key(primaryKey, "u4b"), fileName, new ByteArrayInputStream(second));
 
-        assertFalse(Files.exists(tempDir.resolve("objects/obj4_u4")));
+        assertArrayEquals(first, Files.readAllBytes(tempDir.resolve("objects/obj4_u4")));
         assertArrayEquals(second, Files.readAllBytes(tempDir.resolve("objects/obj4_u4b")));
+        assertTrue(objectManager.checkExist(key(primaryKey, "u4")));
+        assertTrue(objectManager.checkExist(key(primaryKey, "u4b")));
     }
 
     @Test
@@ -497,6 +499,78 @@ class ObjectManagerTest {
     }
 
     @Test
+    void sameKeyWithDifferentAdditionalKeyValuesCoexist() throws Exception {
+        ObjectManager manager = ObjectManager.build("identity", databaseManager);
+        manager.put(key("shared", "u1"), "a.png", new ByteArrayInputStream("one".getBytes()));
+        manager.put(key("shared", "u2"), "a.png", new ByteArrayInputStream("two".getBytes()));
+
+        assertTrue(manager.checkExist(key("shared", "u1")));
+        assertTrue(manager.checkExist(key("shared", "u2")));
+        assertEquals("identity/shared_u1",
+                databaseManager.getStorageLocation("identity", key("shared", "u1")));
+        assertEquals("identity/shared_u2",
+                databaseManager.getStorageLocation("identity", key("shared", "u2")));
+        assertTrue(Files.exists(tempDir.resolve("identity/shared_u1")));
+        assertTrue(Files.exists(tempDir.resolve("identity/shared_u2")));
+        assertEquals(2, databaseManager.count("identity", ObjectStatement.builder().build()));
+    }
+
+    @Test
+    void getRemoveAndCheckExistRequireMatchingAdditionalKeyValues() throws Exception {
+        ObjectManager manager = ObjectManager.build("identity_mismatch", databaseManager);
+        manager.put(key("obj", "u1"), "a.txt", new ByteArrayInputStream("data".getBytes()));
+
+        assertFalse(manager.checkExist(key("obj", "other")));
+        assertThrows(IllegalArgumentException.class, () -> manager.get(key("obj", "other")));
+        assertThrows(IllegalArgumentException.class, () -> manager.remove(key("obj", "other")));
+
+        assertTrue(manager.checkExist(key("obj", "u1")));
+        manager.remove(key("obj", "u1"));
+        assertFalse(manager.checkExist(key("obj", "u1")));
+        assertTrue(tempFilesUnder("identity_mismatch").isEmpty());
+    }
+
+    @Test
+    void keyedOperationsRequireAllAdditionalKeyValues() throws Exception {
+        ObjectManager manager = ObjectManager.build("identity_missing", databaseManager);
+        ObjectStatement missingKv = ObjectStatement.builder().key("obj").build();
+        assertThrows(IllegalArgumentException.class, () ->
+                manager.put(missingKv, "a.txt", new ByteArrayInputStream("x".getBytes())));
+        assertThrows(IllegalArgumentException.class, () -> manager.get(missingKv));
+        assertThrows(IllegalArgumentException.class, () -> manager.remove(missingKv));
+        assertThrows(IllegalArgumentException.class, () -> manager.checkExist(missingKv));
+    }
+
+    @Test
+    void longAdditionalKeyColumnEndToEnd() throws Exception {
+        DatabaseManager longDb = DatabaseManager.builder()
+                .dataSource(dataSource)
+                .keyColumn("tenant_id", KeyType.LONG)
+                .build();
+        ObjectManager manager = ObjectManager.build("long_key", longDb);
+
+        ObjectStatement tenant = ObjectStatement.builder().key("doc1").kv("tenant_id", "7").build();
+        manager.put(tenant, "a.txt", new ByteArrayInputStream("data".getBytes()));
+
+        assertTrue(manager.checkExist(tenant));
+        try (ObjectData object = manager.get(tenant)) {
+            assertArrayEquals("data".getBytes(), object.stream().readAllBytes());
+        }
+        assertEquals("long_key/doc1_7",
+                longDb.getStorageLocation("long_key", tenant));
+
+        ObjectStatement otherTenant = ObjectStatement.builder().key("doc1").kv("tenant_id", "8").build();
+        assertFalse(manager.checkExist(otherTenant));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                manager.put(ObjectStatement.builder().key("doc1").kv("tenant_id", "not-a-long").build(),
+                        "b.txt", new ByteArrayInputStream("x".getBytes())));
+
+        manager.remove(tenant);
+        assertFalse(manager.checkExist(tenant));
+    }
+
+    @Test
     void putAndGetLeaveNoFilesForRejectedKeys() throws Exception {
         ObjectManager manager = ObjectManager.build("rejected_keys", databaseManager);
         ObjectStatement statement = ObjectStatement.builder().key("a/../../x").build();
@@ -561,7 +635,7 @@ class ObjectManagerTest {
                 manager.update(key("obj", "u1"), "b.txt", new ByteArrayInputStream("new version".getBytes())));
 
         assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_fail/obj_u1")));
-        assertEquals(original.length, databaseManager.getMetadata("update_fail", key("obj", "uA")).fileSize());
+        assertEquals(original.length, databaseManager.getMetadata("update_fail", key("obj", "u1")).fileSize());
         assertEquals(1, tempFilesUnder("update_fail").size());
     }
 

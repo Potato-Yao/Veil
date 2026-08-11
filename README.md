@@ -132,6 +132,20 @@ dependencies {
 
 > **Note:** `VeilConfiguration` must be initialized before any `ObjectManager` is built.
 
+## Object identity
+
+An object's identity is its primary key together with every additional key column
+value declared on the `DatabaseManager`. With `user_id` as an additional key,
+`("user123", "u1")` and `("user123", "u2")` are two distinct objects. Every
+single-object operation (`get`, `update`, `remove`, `checkExist`,
+`updateMetadata`) must carry the full identity; a missing or mismatched additional
+key value addresses a different (possibly absent) object.
+
+The identity is immutable: `update()` replaces the content and metadata of the
+object with that identity (preserving its access statistics), or creates a new
+object if the identity does not exist yet. To move an object to a different key,
+remove it and store it again.
+
 ## Concurrency
 
 Mutations of the same object (`put`, `update`, `remove`, `updateMetadata`, `get`) are
