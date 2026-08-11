@@ -4,6 +4,7 @@ import com.potato.VeilConfiguration;
 import com.potato.database.DatabaseManager;
 import com.potato.storage.FileManager;
 import com.potato.util.CountingInputStream;
+import com.potato.util.StripedLock;
 
 import java.io.InputStream;
 import java.security.DigestInputStream;
@@ -11,11 +12,12 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Manages objects (files) within a single namespace.
@@ -28,9 +30,14 @@ import java.util.UUID;
  * <p>Objects are addressed by a primary key, optionally combined with additional key
  * columns defined when building the {@link DatabaseManager} (for example a
  * {@code user_id}). Instances are created with {@link #build(String, DatabaseManager)}.</p>
+ *
+ * <p>Mutations of the same object are serialized through a bounded striped lock, so
+ * concurrent {@link #put}, {@link #update}, {@link #remove} and {@link #get} calls
+ * for one key never interleave; distinct keys run concurrently.</p>
  */
 public class ObjectManager {
-    private static final ArrayList<String> namespaceList = new ArrayList<>();
+    private static final Set<String> namespaceList = ConcurrentHashMap.newKeySet();
+    private static final StripedLock keyedLock = new StripedLock();
     private final String namespace;
     private final FileManager mainStorageManager;
     private final FileManager cacheStorageManager;
@@ -56,7 +63,7 @@ public class ObjectManager {
      */
     public static ObjectManager build(String namespace, DatabaseManager databaseManager) {
         validateLocation(namespace);
-        if (checkDuplicateNamespace(namespace)) {
+        if (!namespaceList.add(namespace)) {
             throw new IllegalArgumentException("The namespace \"" + namespace + "\" is already taken");
         }
 
@@ -64,9 +71,9 @@ public class ObjectManager {
         try {
             databaseManager.createTable(namespace);
         } catch (SQLException e) {
+            namespaceList.remove(namespace);
             throw new RuntimeException(e);
         }
-        namespaceList.add(namespace);
 
         return new ObjectManager(namespace, configuration.getMainStorageManager(), configuration.getCacheManager(), databaseManager);
     }
@@ -118,13 +125,19 @@ public class ObjectManager {
      */
     public ObjectData get(ObjectStatement statement) {
         validateKv(statement.kv());
-        ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement);
-        if (metadata == null) {
-            throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
+        String location = buildLocation(statement.key(), statement.kv());
+        keyedLock.lock(location);
+        try {
+            ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement);
+            if (metadata == null) {
+                throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
+            }
+            databaseManager.updateAccess(namespace, statement);
+            InputStream stream = mainStorageManager.read(location);
+            return new ObjectData(metadata, stream);
+        } finally {
+            keyedLock.unlock(location);
         }
-        databaseManager.updateAccess(namespace, statement);
-        InputStream stream = mainStorageManager.read(buildLocation(statement.key(), statement.kv()));
-        return new ObjectData(metadata, stream);
     }
 
     /**
@@ -140,22 +153,28 @@ public class ObjectManager {
      */
     public boolean remove(ObjectStatement statement) {
         validateKv(statement.kv());
-        ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement);
-        if (metadata == null) {
-            throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
-        }
-        databaseManager.delete(namespace, statement);
+        String location = buildLocation(statement.key(), statement.kv());
+        keyedLock.lock(location);
         try {
-            mainStorageManager.delete(metadata.storageLocation());
-        } catch (RuntimeException e) {
-            try {
-                databaseManager.upsertMetadata(namespace, keyStatement(statement), metadata, false);
-            } catch (RuntimeException restoreFailure) {
-                e.addSuppressed(restoreFailure);
+            ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement);
+            if (metadata == null) {
+                throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
             }
-            throw e;
+            databaseManager.delete(namespace, statement);
+            try {
+                mainStorageManager.delete(metadata.storageLocation());
+            } catch (RuntimeException e) {
+                try {
+                    databaseManager.upsertMetadata(namespace, keyStatement(statement), metadata, false);
+                } catch (RuntimeException restoreFailure) {
+                    e.addSuppressed(restoreFailure);
+                }
+                throw e;
+            }
+            return true;
+        } finally {
+            keyedLock.unlock(location);
         }
-        return true;
     }
 
     /**
@@ -208,10 +227,16 @@ public class ObjectManager {
      */
     public void updateMetadata(ObjectStatement statement) {
         validateKv(statement.kv());
-        if (databaseManager.getStorageLocation(namespace, statement) == null) {
-            throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
+        String location = buildLocation(statement.key(), statement.kv());
+        keyedLock.lock(location);
+        try {
+            if (databaseManager.getStorageLocation(namespace, statement) == null) {
+                throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
+            }
+            databaseManager.executeUpdate(namespace, statement);
+        } finally {
+            keyedLock.unlock(location);
         }
-        databaseManager.executeUpdate(namespace, statement);
     }
 
     /**
@@ -275,36 +300,41 @@ public class ObjectManager {
         validateKv(kv);
         String location = buildLocation(primaryKey, kv);
 
-        String existingLocation = null;
-        if (overwrite) {
-            existingLocation = databaseManager.getStorageLocation(namespace, statement);
-        } else if (databaseManager.getStorageLocation(namespace, statement) != null) {
-            throw new IllegalArgumentException("Object \"" + primaryKey + "\" already exists in namespace \"" + namespace + "\"");
-        }
-
-        String tempLocation = location + ".tmp-" + UUID.randomUUID();
+        keyedLock.lock(location);
         try {
-            MessageDigest md5 = MessageDigest.getInstance("MD5");
-            CountingInputStream counting = new CountingInputStream(source);
-            DigestInputStream digesting = new DigestInputStream(counting, md5);
-
-            mainStorageManager.put(tempLocation, digesting);
-
-            long size = counting.getByteCount();
-            String md5Hex = HexFormat.of().formatHex(md5.digest());
-            ObjectMetadata metadata = new ObjectMetadata(fileName, extractExtension(fileName), size, md5Hex,
-                    Instant.now().toString(), null, "DISK", location, 0);
-            databaseManager.upsertMetadata(namespace, statement, metadata, overwrite);
-
-            mainStorageManager.rename(tempLocation, location);
-            if (existingLocation != null && !existingLocation.equals(location)) {
-                mainStorageManager.delete(existingLocation);
+            String existingLocation = null;
+            if (overwrite) {
+                existingLocation = databaseManager.getStorageLocation(namespace, statement);
+            } else if (databaseManager.getStorageLocation(namespace, statement) != null) {
+                throw new IllegalArgumentException("Object \"" + primaryKey + "\" already exists in namespace \"" + namespace + "\"");
             }
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
-        } catch (RuntimeException e) {
-            mainStorageManager.delete(tempLocation);
-            throw e;
+
+            String tempLocation = location + ".tmp-" + UUID.randomUUID();
+            try {
+                MessageDigest md5 = MessageDigest.getInstance("MD5");
+                CountingInputStream counting = new CountingInputStream(source);
+                DigestInputStream digesting = new DigestInputStream(counting, md5);
+
+                mainStorageManager.put(tempLocation, digesting);
+
+                long size = counting.getByteCount();
+                String md5Hex = HexFormat.of().formatHex(md5.digest());
+                ObjectMetadata metadata = new ObjectMetadata(fileName, extractExtension(fileName), size, md5Hex,
+                        Instant.now().toString(), null, "DISK", location, 0);
+                databaseManager.upsertMetadata(namespace, statement, metadata, overwrite);
+
+                mainStorageManager.rename(tempLocation, location);
+                if (existingLocation != null && !existingLocation.equals(location)) {
+                    mainStorageManager.delete(existingLocation);
+                }
+            } catch (NoSuchAlgorithmException e) {
+                throw new RuntimeException(e);
+            } catch (RuntimeException e) {
+                mainStorageManager.delete(tempLocation);
+                throw e;
+            }
+        } finally {
+            keyedLock.unlock(location);
         }
     }
 

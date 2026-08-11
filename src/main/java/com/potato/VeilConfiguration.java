@@ -34,6 +34,11 @@ public class VeilConfiguration {
      * {@code cacheManager} is {@code null}, the main storage manager is used as the
      * cache manager.</p>
      *
+     * <p>Every {@link com.potato.database.DatabaseManager} operation opens one
+     * connection, so callers must supply a pooled {@link DataSource} (for example
+     * HikariCP) in production. SQLite is a single-writer engine and should be used
+     * for development only; PostgreSQL is the recommended production engine.</p>
+     *
      * @param dataSource           the data source for metadata persistence
      * @param mainStorageManager   the file manager used as primary storage
      * @param cacheManager         the file manager used as cache, or {@code null}
@@ -55,7 +60,9 @@ public class VeilConfiguration {
      * Initializes the global configuration for development use.
      *
      * <p>Uses a SQLite data source writing to {@code ./veil_metadata.db} and a
-     * {@link DiskFileManager} rooted at the current working directory.</p>
+     * {@link DiskFileManager} rooted at the current working directory. The data
+     * source is configured with a busy timeout and WAL journal mode so that
+     * concurrent writers wait and readers do not block writers.</p>
      *
      * @return the initialized {@link VeilConfiguration}
      * @throws IllegalStateException if the configuration was already initialized
@@ -63,6 +70,9 @@ public class VeilConfiguration {
     public static VeilConfiguration initForDev() {
         SQLiteDataSource dataSource = new SQLiteDataSource();
         dataSource.setUrl("jdbc:sqlite:./veil_metadata.db");
+        dataSource.setBusyTimeout(3000);
+        dataSource.setJournalMode("WAL");
+        dataSource.setSynchronous("NORMAL");
         FileManager mainStorageManager = new DiskFileManager();
         return init(dataSource, mainStorageManager, null);
     }

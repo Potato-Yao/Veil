@@ -132,6 +132,18 @@ dependencies {
 
 > **Note:** `VeilConfiguration` must be initialized before any `ObjectManager` is built.
 
+## Concurrency
+
+Mutations of the same object (`put`, `update`, `remove`, `updateMetadata`, `get`) are
+serialized through a bounded striped lock, so concurrent operations on one key never
+interleave while distinct keys run in parallel.
+
+Every `DatabaseManager` operation opens one connection from the supplied `DataSource`.
+For production you should provide a pooled `DataSource` (for example HikariCP) rather
+than a bare one. SQLite is a single-writer engine and is intended for development;
+`initForDev()` configures its data source with a busy timeout and WAL journal mode so
+concurrent writers wait instead of failing. Use PostgreSQL for production workloads.
+
 ## PostgreSQL
 
 By default metadata is persisted in SQLite. To use PostgreSQL instead, pass a PostgreSQL
