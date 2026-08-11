@@ -245,43 +245,10 @@ public class ObjectManager {
         }
     }
 
-    /**
-     * Removes every object matching the given statement, deleting both the metadata
-     * rows and their files.
-     *
-     * <p>The metadata rows are deleted first; if deleting a file then fails, that
-     * row's metadata is restored so the object remains addressable. Remaining files
-     * are still cleaned up before the failure is reported.</p>
-     *
-     * <p>An empty statement removes every object in the namespace.</p>
-     *
-     * @param statement the statement whose conditions should be applied
-     * @return the number of removed objects
-     * @throws IllegalArgumentException if {@code statement} references an unknown column
-     */
-    public long removeAll(ObjectStatement statement) {
-        List<ObjectReference> references = databaseManager.query(namespace, statement);
-        long removed = databaseManager.executeDelete(namespace, statement);
-        RuntimeException failure = null;
-        for (ObjectReference reference : references) {
-            try {
-                mainStorageManager.delete(reference.metadata().storageLocation());
-            } catch (RuntimeException e) {
-                if (failure == null) {
-                    failure = e;
-                }
-                try {
-                    databaseManager.upsertMetadata(namespace, keyStatement(reference), reference.metadata(), false);
-                } catch (RuntimeException restoreFailure) {
-                    e.addSuppressed(restoreFailure);
-                }
-            }
-        }
-        if (failure != null) {
-            throw failure;
-        }
-        return removed;
-    }
+    // TODO: bulk deletion via bounded cursor-based batches: page identities and storage
+    // locations ordered by the identity keyset, delete each file then its metadata row
+    // (restoring on failure) per batch, until none remain. Reject limit/offset and
+    // stream the page so memory stays bounded. (issues.md #3)
 
     /**
      * Common store routine shared by {@link #put(ObjectStatement, String, InputStream)} and
@@ -349,16 +316,6 @@ public class ObjectManager {
      */
     private static ObjectStatement keyStatement(ObjectStatement statement) {
         return ObjectStatement.builder().key(statement.key()).kv(statement.kv()).build();
-    }
-
-    /**
-     * Builds a key-and-kv-only statement from the given reference.
-     *
-     * @param reference the reference whose key and additional key values should be kept
-     * @return a new statement carrying only the key and additional key values
-     */
-    private static ObjectStatement keyStatement(ObjectReference reference) {
-        return ObjectStatement.builder().key(reference.key()).kv(reference.kv()).build();
     }
 
     /**

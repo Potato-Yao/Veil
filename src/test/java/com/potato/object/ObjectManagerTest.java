@@ -412,25 +412,6 @@ class ObjectManagerTest {
     }
 
     @Test
-    void removeAllDeletesMatchingObjectsAndFiles() throws Exception {
-        ObjectManager removeManager = ObjectManager.build("remove_all", databaseManager);
-        removeManager.put(key("r1", "uR"), "a.png", new ByteArrayInputStream("one".getBytes()));
-        removeManager.put(key("r2", "uR"), "b.txt", new ByteArrayInputStream("two".getBytes()));
-        removeManager.put(key("r3", "uR"), "c.png", new ByteArrayInputStream("three".getBytes()));
-
-        long removed = removeManager.removeAll(ObjectStatement.builder()
-                .where("file_extension", ObjectStatement.Op.EQ, "png").build());
-        assertEquals(2, removed);
-
-        assertFalse(Files.exists(tempDir.resolve("remove_all/r1_uR")));
-        assertFalse(Files.exists(tempDir.resolve("remove_all/r3_uR")));
-        assertTrue(Files.exists(tempDir.resolve("remove_all/r2_uR")));
-        assertFalse(removeManager.checkExist(key("r1", "uR")));
-        assertTrue(removeManager.checkExist(key("r2", "uR")));
-        assertEquals(1, databaseManager.count("remove_all", ObjectStatement.builder().build()));
-    }
-
-    @Test
     void queryAndCountRejectAssignments() throws Exception {
         ObjectManager manager = ObjectManager.build("reject_query", databaseManager);
         manager.put(key("k1", "u1"), "a.txt", new ByteArrayInputStream("a".getBytes()));
@@ -670,22 +651,6 @@ class ObjectManagerTest {
         assertNotNull(databaseManager.getMetadata("remove_fail", key("obj", "u1")));
     }
 
-    @Test
-    void removeAllKeepsFilesAndMetadataWhenExecuteDeleteFails() throws Exception {
-        FailingDatabaseManager failing = failingManager();
-        ObjectManager manager = ObjectManager.build("remove_all_fail", failing);
-        manager.put(key("r1", "u1"), "a.txt", new ByteArrayInputStream("one".getBytes()));
-        manager.put(key("r2", "u1"), "b.txt", new ByteArrayInputStream("two".getBytes()));
-        failing.failOn("executeDelete");
-
-        assertThrows(RuntimeException.class, () ->
-                manager.removeAll(ObjectStatement.builder().build()));
-
-        assertTrue(Files.exists(tempDir.resolve("remove_all_fail/r1_u1")));
-        assertTrue(Files.exists(tempDir.resolve("remove_all_fail/r2_u1")));
-        assertEquals(2, databaseManager.count("remove_all_fail", ObjectStatement.builder().build()));
-    }
-
     /**
      * {@link DatabaseManager} whose write operations can be made to fail on demand,
      * used to verify that {@link ObjectManager} leaves no partial state behind.
@@ -717,12 +682,6 @@ class ObjectManagerTest {
         public boolean delete(String namespace, ObjectStatement statement) {
             failIf("delete");
             return super.delete(namespace, statement);
-        }
-
-        @Override
-        public long executeDelete(String namespace, ObjectStatement statement) {
-            failIf("executeDelete");
-            return super.executeDelete(namespace, statement);
         }
     }
 }

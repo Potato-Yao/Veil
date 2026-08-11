@@ -182,3 +182,25 @@ One JVM simplifies coordination, but it does not eliminate:
 9. Aggregate access statistics asynchronously.
 10. Add reconciliation, orphan cleanup, metrics, and failure-injection tests.
     Under the one-JVM assumption, Veil does not need distributed locking, service discovery, or cross-node cache coherence. Its central challenge is instead building a bounded, crash-recoverable, concurrency-safe pipeline between PostgreSQL and high-volume byte storage.
+
+Missing features (from requirements.md)
+1. No validation policy — requirement "fits the requirements (file type, file size), duplicate, strategy" is unimplemented. put/update accept any type/size, no dedup, no max-size.
+2. No archive/"achieve" function — nothing compresses/evicts files idle past a threshold.
+3. LFU/hot-file cache unused — cacheStorageManager is stored but get() always reads mainStorageManager (ObjectManager.java:136); hot-file caching never happens.
+   Wrong / broken design
+4. Object identity is broken (still issues.md #1). DB PK is key alone (DatabaseManager.java:43); getMetadata/getStorageLocation/delete/updateAccess filter only by key. Additional keys change the file path but not lookup or uniqueness. get(key=x, user_id=u1) on a row stored with user_id=u2 resolves metadata for u2 but reads ns/x_u1 → mismatch/missing file.
+5. SQL injection via namespace — every query concatenates Config.DATABASE_PREFIX + "_" + namespace (e.g. DatabaseManager.java:92,160). validateLocation (ObjectManager.java:435) rejects /,\,..,~,- but allows ", ;, --, so ObjectManager.build("foo\"; DROP ...") injects table names.
+6. Metadata committed before file is in place (issues.md #2, still open). store() does upsertMetadata(READY) → then rename (ObjectManager.java:324-326). Crash between them leaves metadata pointing at a missing file; rename failure isn't handled (only temp cleanup), no lifecycle status (UPLOADING/READY/DELETING), no version column, no optimistic locking.
+7. removeAll still unbounded — loads all rows into a list (ObjectManager.java:257) then runs one DELETE ignoring limit; diverges from query paging, risks orphan files / memory blowup at scale.
+8. updateMetadata lets you corrupt metadata — validateUpdateColumn only excludes key columns, so md5, file_size, storage_location, storage_type, created_at, access_count are all settable without touching content; breaks the md5==bytes invariant the concurrency tests assert.
+9. Synchronous UPDATE on every get() — DatabaseManager.java:237 writes last_accessed_at/access_count per read; the documented bottleneck, unchanged.
+10. DiskFileManager.resolve() still only normalizes (DiskFileManager.java:148) — no startswith-root containment, no symlink defense, no exists/size.
+11. No backpressure/scalability — no max upload size, concurrency limits, cursor pagination (still offset), query limits, or timeouts.
+    Lower priority
+- Table-per-namespace with TEXT timestamps, no updated_at; MD5 vs SHA-256; static 64-stripe global lock; dead/confusing FileManager.get() (returns OutputStream); reads open the stream under the stripe lock and hold it after unlock (Windows rename semantics); static namespace registry couples to the singleton config.
+  Suggested priority order (if you want to proceed)
+1. Namespace identifier whitelist (kill injection) + real composite identity (key+additional keys in PK and all WHERE clauses).
+2. Lifecycle states + version/optimistic locking; commit READY only after file rename; reconcile orphans.
+3. Async/aggregated access stats; bounded removeAll.
+4. updateMetadata whitelist; containment-hardened DiskFileManager.
+5. Validation policy, archive function, LFU cache, pagination/backpressure, hash-fan-out layout.

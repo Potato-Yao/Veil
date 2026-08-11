@@ -19,16 +19,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies that {@link ObjectManager#remove(ObjectStatement)} and
- * {@link ObjectManager#removeAll(ObjectStatement)} restore metadata when the file
- * deletion fails after the database row has been removed.
+ * Verifies that {@link ObjectManager#remove(ObjectStatement)} restores metadata when
+ * the file deletion fails after the database row has been removed.
  */
 class ObjectManagerRemoveAtomicityTest {
     @TempDir
@@ -74,21 +71,6 @@ class ObjectManagerRemoveAtomicityTest {
         assertEquals(before.lastAccessedAt(), after.lastAccessedAt());
         assertEquals(before.accessCount(), after.accessCount());
         assertTrue(Files.exists(tempDir.resolve("remove_atomic/obj_u1")));
-    }
-
-    @Test
-    void removeAllRestoresOnlyRowsWhoseFileDeleteFailed() throws Exception {
-        objectManager.put(key("r1", "u1"), "a.txt", new ByteArrayInputStream("one".getBytes()));
-        objectManager.put(key("r2", "u1"), "b.txt", new ByteArrayInputStream("two".getBytes()));
-
-        fileManager.failOn("remove_atomic/r1_u1");
-        assertThrows(RuntimeException.class, () -> objectManager.removeAll(ObjectStatement.builder().build()));
-
-        assertNotNull(databaseManager.getMetadata("remove_atomic", key("r1", "u1")));
-        assertTrue(Files.exists(tempDir.resolve("remove_atomic/r1_u1")));
-
-        assertNull(databaseManager.getMetadata("remove_atomic", key("r2", "u1")));
-        assertFalse(Files.exists(tempDir.resolve("remove_atomic/r2_u1")));
     }
 
     /**

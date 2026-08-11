@@ -78,8 +78,5 @@ public class ExampleMain {
         System.out.println("Exists before remove: " + avatarManager.checkExist(avatar));
         avatarManager.remove(avatar);
         System.out.println("Exists after remove: " + avatarManager.checkExist(avatar));
-
-        // 10. Batch-remove every remaining object in the namespace.
-        System.out.println("Removed " + avatarManager.removeAll(ObjectStatement.builder().build()) + " remaining object(s)");
     }
 }
