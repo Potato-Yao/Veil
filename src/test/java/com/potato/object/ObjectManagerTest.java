@@ -347,7 +347,7 @@ class ObjectManagerTest {
         metaManager.updateMetadata(ObjectStatement.builder().key(primaryKey).kv("user_id", "uM")
                 .set("file_name", "renamed.png").build());
 
-        ObjectMetadata afterName = databaseManager.getMetadata("meta", primaryKey);
+        ObjectMetadata afterName = databaseManager.getMetadata("meta", key(primaryKey, "uM"));
         assertEquals("renamed.png", afterName.fileName());
         assertEquals("png", afterName.fileExtension());
         assertEquals(data.length, afterName.fileSize());
@@ -356,13 +356,13 @@ class ObjectManagerTest {
 
         metaManager.updateMetadata(ObjectStatement.builder().key(primaryKey).kv("user_id", "uM")
                 .set("file_extension", "jpg").build());
-        ObjectMetadata afterExtension = databaseManager.getMetadata("meta", primaryKey);
+        ObjectMetadata afterExtension = databaseManager.getMetadata("meta", key(primaryKey, "uM"));
         assertEquals("renamed.png", afterExtension.fileName());
         assertEquals("jpg", afterExtension.fileExtension());
 
         metaManager.updateMetadata(ObjectStatement.builder().key(primaryKey).kv("user_id", "uM")
                 .set("file_name", "final.jpg").build());
-        ObjectMetadata afterBoth = databaseManager.getMetadata("meta", primaryKey);
+        ObjectMetadata afterBoth = databaseManager.getMetadata("meta", key(primaryKey, "uM"));
         assertEquals("final.jpg", afterBoth.fileName());
         assertEquals("jpg", afterBoth.fileExtension());
     }
@@ -398,8 +398,8 @@ class ObjectManagerTest {
                         .where("file_size", ObjectStatement.Op.GTE, 10).build());
         assertEquals(1, updated);
 
-        assertEquals("small.txt", databaseManager.getMetadata("batch", "b1").fileName());
-        assertEquals("renamed.txt", databaseManager.getMetadata("batch", "b2").fileName());
+        assertEquals("small.txt", databaseManager.getMetadata("batch", key("b1", "uB")).fileName());
+        assertEquals("renamed.txt", databaseManager.getMetadata("batch", key("b2", "uB")).fileName());
     }
 
     @Test
@@ -450,7 +450,7 @@ class ObjectManagerTest {
         assertThrows(IllegalArgumentException.class, () ->
                 databaseManager.executeUpdate("batch", ObjectStatement.builder().build()));
         assertThrows(IllegalArgumentException.class, () ->
-                databaseManager.executeUpdate("batch", "k1", ObjectStatement.builder().build()));
+                databaseManager.executeUpdate("batch", ObjectStatement.builder().key("k1").build()));
     }
 
     @Test
@@ -561,7 +561,7 @@ class ObjectManagerTest {
                 manager.update(key("obj", "u1"), "b.txt", new ByteArrayInputStream("new version".getBytes())));
 
         assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_fail/obj_u1")));
-        assertEquals(original.length, databaseManager.getMetadata("update_fail", "obj").fileSize());
+        assertEquals(original.length, databaseManager.getMetadata("update_fail", key("obj", "uA")).fileSize());
         assertEquals(1, tempFilesUnder("update_fail").size());
     }
 
@@ -578,7 +578,7 @@ class ObjectManagerTest {
 
         assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_reloc/obj_uA")));
         assertEquals("update_reloc/obj_uA",
-                databaseManager.getStorageLocation("update_reloc", "obj"));
+                databaseManager.getStorageLocation("update_reloc", key("obj", "uA")));
         assertFalse(Files.exists(tempDir.resolve("update_reloc/obj_uB")));
     }
 
@@ -593,7 +593,7 @@ class ObjectManagerTest {
         assertThrows(RuntimeException.class, () -> manager.remove(key("obj", "u1")));
 
         assertArrayEquals(data, Files.readAllBytes(tempDir.resolve("remove_fail/obj_u1")));
-        assertNotNull(databaseManager.getMetadata("remove_fail", "obj"));
+        assertNotNull(databaseManager.getMetadata("remove_fail", key("obj", "u1")));
     }
 
     @Test
@@ -634,27 +634,15 @@ class ObjectManagerTest {
         }
 
         @Override
-        public void insert(String namespace, ObjectStatement statement,
-                           String fileName, String extension, long size, String md5,
-                           String createdAt, String storageType, String storageLocation) {
-            failIf("insert");
-            super.insert(namespace, statement, fileName, extension, size, md5,
-                    createdAt, storageType, storageLocation);
+        public void upsertMetadata(String namespace, ObjectStatement statement, ObjectMetadata metadata, boolean overwrite) {
+            failIf(overwrite ? "upsert" : "insert");
+            super.upsertMetadata(namespace, statement, metadata, overwrite);
         }
 
         @Override
-        public void upsert(String namespace, ObjectStatement statement,
-                           String fileName, String extension, long size, String md5,
-                           String createdAt, String storageType, String storageLocation) {
-            failIf("upsert");
-            super.upsert(namespace, statement, fileName, extension, size, md5,
-                    createdAt, storageType, storageLocation);
-        }
-
-        @Override
-        public boolean delete(String namespace, String key) {
+        public boolean delete(String namespace, ObjectStatement statement) {
             failIf("delete");
-            return super.delete(namespace, key);
+            return super.delete(namespace, statement);
         }
 
         @Override

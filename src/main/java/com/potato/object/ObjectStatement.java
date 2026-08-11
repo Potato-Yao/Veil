@@ -18,7 +18,7 @@ import java.util.Map;
  * method it is passed to:
  * {@link DatabaseManager#query(String, ObjectStatement)},
  * {@link DatabaseManager#count(String, ObjectStatement)},
- * {@link DatabaseManager#insert(String, ObjectStatement, String, String, long, String, String, String, String)},
+ * {@link DatabaseManager#insert(String, ObjectStatement, ObjectMetadata)},
  * {@link DatabaseManager#executeUpdate(String, ObjectStatement)} or
  * {@link DatabaseManager#executeDelete(String, ObjectStatement)}.</p>
  *
@@ -114,8 +114,8 @@ public class ObjectStatement {
         UPDATE_BY_KEY,
         /**
          * An insertion of a new row
-         * ({@link DatabaseManager#insert(String, ObjectStatement, String, String, long, String, String, String, String)}
-         * or {@link DatabaseManager#upsert(String, ObjectStatement, String, String, long, String, String, String, String)}).
+         * ({@link DatabaseManager#insert(String, ObjectStatement, ObjectMetadata)}
+         * or {@link DatabaseManager#upsert(String, ObjectStatement, ObjectMetadata)}).
          */
         INSERT,
         /**

@@ -118,11 +118,11 @@ public class ObjectManager {
      */
     public ObjectData get(ObjectStatement statement) {
         validateKv(statement.kv());
-        ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement.key());
+        ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement);
         if (metadata == null) {
             throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
         }
-        databaseManager.updateAccess(namespace, statement.key());
+        databaseManager.updateAccess(namespace, statement);
         InputStream stream = mainStorageManager.read(buildLocation(statement.key(), statement.kv()));
         return new ObjectData(metadata, stream);
     }
@@ -130,8 +130,8 @@ public class ObjectManager {
     /**
      * Removes a stored object, deleting both its metadata row and its file.
      *
-     * <p>The metadata row is deleted first; if deleting the file then fails, only a
-     * stray file remains, never a metadata row pointing at a missing file.</p>
+     * <p>The metadata row is deleted first; if deleting the file then fails, the
+     * metadata row is restored so that the object remains addressable and consistent.</p>
      *
      * @param statement the statement carrying the primary key (and additional key values)
      * @return {@code true} once the object has been removed
@@ -140,12 +140,21 @@ public class ObjectManager {
      */
     public boolean remove(ObjectStatement statement) {
         validateKv(statement.kv());
-        String location = databaseManager.getStorageLocation(namespace, statement.key());
-        if (location == null) {
+        ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement);
+        if (metadata == null) {
             throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
         }
-        databaseManager.delete(namespace, statement.key());
-        mainStorageManager.delete(location);
+        databaseManager.delete(namespace, statement);
+        try {
+            mainStorageManager.delete(metadata.storageLocation());
+        } catch (RuntimeException e) {
+            try {
+                databaseManager.upsertMetadata(namespace, keyStatement(statement), metadata, false);
+            } catch (RuntimeException restoreFailure) {
+                e.addSuppressed(restoreFailure);
+            }
+            throw e;
+        }
         return true;
     }
 
@@ -158,15 +167,15 @@ public class ObjectManager {
      */
     public boolean checkExist(ObjectStatement statement) {
         validateKv(statement.kv());
-        return databaseManager.getStorageLocation(namespace, statement.key()) != null;
+        return databaseManager.getStorageLocation(namespace, statement) != null;
     }
 
     /**
      * Runs a query over the metadata of this namespace.
      *
-     * @param statement  the statement to run
+     * @param statement the statement to run
      * @return the matching objects as {@link ObjectReference}s, ordered and limited as
-     *         specified by {@code statement}
+     * specified by {@code statement}
      * @throws IllegalArgumentException if {@code statement} references an unknown column
      */
     public List<ObjectReference> query(ObjectStatement statement) {
@@ -176,7 +185,7 @@ public class ObjectManager {
     /**
      * Counts the objects in this namespace matching the given statement's conditions.
      *
-     * @param statement  the statement whose conditions should be applied
+     * @param statement the statement whose conditions should be applied
      * @return the number of matching objects
      * @throws IllegalArgumentException if {@code statement} references an unknown column
      */
@@ -199,24 +208,23 @@ public class ObjectManager {
      */
     public void updateMetadata(ObjectStatement statement) {
         validateKv(statement.kv());
-        statement.validateFor(ObjectStatement.Operation.UPDATE_BY_KEY);
-        if (databaseManager.getStorageLocation(namespace, statement.key()) == null) {
+        if (databaseManager.getStorageLocation(namespace, statement) == null) {
             throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
         }
-        databaseManager.executeUpdate(namespace, statement.key(), statement);
+        databaseManager.executeUpdate(namespace, statement);
     }
 
     /**
      * Removes every object matching the given statement, deleting both the metadata
      * rows and their files.
      *
-     * <p>The metadata rows are deleted first; if deleting a file then fails, only a
-     * stray file remains, never a metadata row pointing at a missing file. Remaining
-     * files are still cleaned up before the failure is reported.</p>
+     * <p>The metadata rows are deleted first; if deleting a file then fails, that
+     * row's metadata is restored so the object remains addressable. Remaining files
+     * are still cleaned up before the failure is reported.</p>
      *
      * <p>An empty statement removes every object in the namespace.</p>
      *
-     * @param statement  the statement whose conditions should be applied
+     * @param statement the statement whose conditions should be applied
      * @return the number of removed objects
      * @throws IllegalArgumentException if {@code statement} references an unknown column
      */
@@ -230,6 +238,11 @@ public class ObjectManager {
             } catch (RuntimeException e) {
                 if (failure == null) {
                     failure = e;
+                }
+                try {
+                    databaseManager.upsertMetadata(namespace, keyStatement(reference), reference.metadata(), false);
+                } catch (RuntimeException restoreFailure) {
+                    e.addSuppressed(restoreFailure);
                 }
             }
         }
@@ -264,8 +277,8 @@ public class ObjectManager {
 
         String existingLocation = null;
         if (overwrite) {
-            existingLocation = databaseManager.getStorageLocation(namespace, primaryKey);
-        } else if (databaseManager.getStorageLocation(namespace, primaryKey) != null) {
+            existingLocation = databaseManager.getStorageLocation(namespace, statement);
+        } else if (databaseManager.getStorageLocation(namespace, statement) != null) {
             throw new IllegalArgumentException("Object \"" + primaryKey + "\" already exists in namespace \"" + namespace + "\"");
         }
 
@@ -279,15 +292,9 @@ public class ObjectManager {
 
             long size = counting.getByteCount();
             String md5Hex = HexFormat.of().formatHex(md5.digest());
-            String extension = extractExtension(fileName);
-            String createdAt = Instant.now().toString();
-            if (overwrite) {
-                databaseManager.upsert(namespace, statement, fileName, extension, size, md5Hex,
-                        createdAt, "DISK", location);
-            } else {
-                databaseManager.insert(namespace, statement, fileName, extension, size, md5Hex,
-                        createdAt, "DISK", location);
-            }
+            ObjectMetadata metadata = new ObjectMetadata(fileName, extractExtension(fileName), size, md5Hex,
+                    Instant.now().toString(), null, "DISK", location, 0);
+            databaseManager.upsertMetadata(namespace, statement, metadata, overwrite);
 
             mainStorageManager.rename(tempLocation, location);
             if (existingLocation != null && !existingLocation.equals(location)) {
@@ -299,6 +306,29 @@ public class ObjectManager {
             mainStorageManager.delete(tempLocation);
             throw e;
         }
+    }
+
+    /**
+     * Builds a key-and-kv-only statement from the given statement.
+     *
+     * <p>Used to restore an object independently of any conditions, assignments or
+     * ordering the original statement may carry.</p>
+     *
+     * @param statement the statement whose key and additional key values should be kept
+     * @return a new statement carrying only the key and additional key values
+     */
+    private static ObjectStatement keyStatement(ObjectStatement statement) {
+        return ObjectStatement.builder().key(statement.key()).kv(statement.kv()).build();
+    }
+
+    /**
+     * Builds a key-and-kv-only statement from the given reference.
+     *
+     * @param reference the reference whose key and additional key values should be kept
+     * @return a new statement carrying only the key and additional key values
+     */
+    private static ObjectStatement keyStatement(ObjectReference reference) {
+        return ObjectStatement.builder().key(reference.key()).kv(reference.kv()).build();
     }
 
     /**

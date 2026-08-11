@@ -118,65 +118,51 @@ public abstract class DatabaseManager {
      * Inserts a new metadata row for an object.
      *
      * <p>Fails if a row with the same key already exists. Use
-     * {@link #upsert(String, ObjectStatement, String, String, long, String, String, String, String)}
-     * to replace an existing row.</p>
+     * {@link #upsert(String, ObjectStatement, ObjectMetadata)} to replace an existing
+     * row. The metadata is persisted exactly as given, including access statistics and
+     * timestamps; pass an {@link ObjectMetadata} with {@code null} last-access and zero
+     * access count for a fresh insert.</p>
      *
-     * @param namespace        the namespace the object belongs to
-     * @param statement        the statement carrying the primary key and additional key values
-     * @param fileName         the stored file name
-     * @param extension        the file extension
-     * @param size             the size of the file in bytes
-     * @param md5              the MD5 digest of the file contents in hex
-     * @param createdAt        ISO-8601 timestamp of creation
-     * @param storageType      the type of storage (e.g. {@code "DISK"})
-     * @param storageLocation  the location of the file within the file manager
+     * @param namespace  the namespace the object belongs to
+     * @param statement  the statement carrying the primary key and additional key values
+     * @param metadata   the metadata of the object to persist
      * @throws IllegalArgumentException if the statement does not fit an insert or contains an unknown column
      */
-    public void insert(String namespace, ObjectStatement statement,
-                       String fileName, String extension, long size, String md5,
-                       String createdAt, String storageType, String storageLocation) {
-        executeInsert(namespace, statement, fileName, extension, size, md5,
-                createdAt, storageType, storageLocation, false);
+    public void insert(String namespace, ObjectStatement statement, ObjectMetadata metadata) {
+        upsertMetadata(namespace, statement, metadata, false);
     }
 
     /**
      * Inserts or replaces the metadata row for an object.
      *
      * <p>When a row with the same key already exists, its metadata columns are updated
-     * in place.</p>
+     * in place while access statistics are left untouched.</p>
      *
-     * @param namespace        the namespace the object belongs to
-     * @param statement        the statement carrying the primary key and additional key values
-     * @param fileName         the stored file name
-     * @param extension        the file extension
-     * @param size             the size of the file in bytes
-     * @param md5              the MD5 digest of the file contents in hex
-     * @param createdAt        ISO-8601 timestamp of creation
-     * @param storageType      the type of storage (e.g. {@code "DISK"})
-     * @param storageLocation  the location of the file within the file manager
+     * @param namespace  the namespace the object belongs to
+     * @param statement  the statement carrying the primary key and additional key values
+     * @param metadata   the metadata of the object to persist
      * @throws IllegalArgumentException if the statement does not fit an insert or contains an unknown column
      */
-    public void upsert(String namespace, ObjectStatement statement,
-                       String fileName, String extension, long size, String md5,
-                       String createdAt, String storageType, String storageLocation) {
-        executeInsert(namespace, statement, fileName, extension, size, md5,
-                createdAt, storageType, storageLocation, true);
+    public void upsert(String namespace, ObjectStatement statement, ObjectMetadata metadata) {
+        upsertMetadata(namespace, statement, metadata, true);
     }
 
     /**
-     * Returns the storage location of the object with the given key.
+     * Returns the storage location of the object with the given primary key.
      *
      * @param namespace  the namespace of the object
-     * @param key        the primary key of the object
+     * @param statement  the statement carrying the primary key
      * @return the storage location, or {@code null} if no such object exists
+     * @throws IllegalArgumentException if the statement has no key
      */
-    public String getStorageLocation(String namespace, String key) {
+    public String getStorageLocation(String namespace, ObjectStatement statement) {
+        requireKey(statement);
         String sql = "SELECT storage_location FROM " + Config.DATABASE_PREFIX + "_" + namespace
                 + " WHERE key = ?";
         try (Connection connection = getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, key);
-            try (ResultSet resultSet = statement.executeQuery()) {
+             PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+            preparedStatement.setString(1, statement.key());
+            try (ResultSet resultSet = preparedStatement.executeQuery()) {
                 return resultSet.next() ? resultSet.getString("storage_location") : null;
             }
         } catch (SQLException e) {
@@ -185,20 +171,22 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Returns the metadata of the object with the given key.
+     * Returns the metadata of the object with the given primary key.
      *
      * @param namespace  the namespace of the object
-     * @param key        the primary key of the object
+     * @param statement  the statement carrying the primary key
      * @return the object's metadata, or {@code null} if no such object exists
+     * @throws IllegalArgumentException if the statement has no key
      */
-    public ObjectMetadata getMetadata(String namespace, String key) {
+    public ObjectMetadata getMetadata(String namespace, ObjectStatement statement) {
+        requireKey(statement);
         String sql = "SELECT file_name, file_extension, file_size, md5, created_at, last_accessed_at,"
                 + " storage_type, storage_location, access_count FROM " + Config.DATABASE_PREFIX + "_" + namespace
                 + " WHERE key = ?";
         try (Connection connection = getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, key);
-            try (ResultSet resultSet = statement.executeQuery()) {
+             PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+            preparedStatement.setString(1, statement.key());
+            try (ResultSet resultSet = preparedStatement.executeQuery()) {
                 if (!resultSet.next()) {
                     return null;
                 }
@@ -219,38 +207,42 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Deletes the metadata row of the object with the given key.
+     * Deletes the metadata row of the object with the given primary key.
      *
      * @param namespace  the namespace of the object
-     * @param key        the primary key of the object
+     * @param statement  the statement carrying the primary key
      * @return {@code true} if a row was removed, {@code false} if no such object exists
+     * @throws IllegalArgumentException if the statement has no key
      */
-    public boolean delete(String namespace, String key) {
+    public boolean delete(String namespace, ObjectStatement statement) {
+        requireKey(statement);
         String sql = "DELETE FROM " + Config.DATABASE_PREFIX + "_" + namespace + " WHERE key = ?";
         try (Connection connection = getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, key);
-            return statement.executeUpdate() > 0;
+             PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+            preparedStatement.setString(1, statement.key());
+            return preparedStatement.executeUpdate() > 0;
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
     }
 
     /**
-     * Records access to the object with the given key, updating its last access
+     * Records access to the object with the given primary key, updating its last access
      * timestamp and incrementing its access count.
      *
      * @param namespace  the namespace of the object
-     * @param key        the primary key of the object
+     * @param statement  the statement carrying the primary key
+     * @throws IllegalArgumentException if the statement has no key
      */
-    public void updateAccess(String namespace, String key) {
+    public void updateAccess(String namespace, ObjectStatement statement) {
+        requireKey(statement);
         String sql = "UPDATE " + Config.DATABASE_PREFIX + "_" + namespace
                 + " SET last_accessed_at = ?, access_count = access_count + 1 WHERE key = ?";
         try (Connection connection = getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, Instant.now().toString());
-            statement.setString(2, key);
-            statement.executeUpdate();
+             PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+            preparedStatement.setString(1, Instant.now().toString());
+            preparedStatement.setString(2, statement.key());
+            preparedStatement.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
@@ -332,38 +324,24 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Updates the metadata rows of a namespace matching the given statement's
-     * conditions.
+     * Updates metadata rows of a namespace.
      *
-     * <p>The statement's assignments form the {@code SET} clause; only metadata columns
-     * are updatable. Returns the number of rows changed.</p>
+     * <p>When the statement carries a primary key, it is treated as a single-row update
+     * targeted by key and must not carry conditions. Otherwise it is a batch update
+     * applying the statement's assignments to every row matching its conditions.
+     * The assignments form the {@code SET} clause; only metadata columns are updatable.
+     * Returns the number of rows changed.</p>
      *
      * @param namespace  the namespace to update
-     * @param statement  the statement carrying the assignments and conditions
+     * @param statement  the statement carrying the assignments, an optional key and conditions
      * @return the number of updated rows
-     * @throws IllegalArgumentException if the statement has no assignments or references
-     *                                  an unknown or non-updatable column
+     * @throws IllegalArgumentException if the statement has no key or assignments, carries
+     *                                  conditions for a keyed update, or references an
+     *                                  unknown or non-updatable column
      */
     public long executeUpdate(String namespace, ObjectStatement statement) {
-        return executeUpdate(namespace, null, statement);
-    }
-
-    /**
-     * Updates the metadata row of a single object, targeting it by primary key.
-     *
-     * <p>Applies the statement's assignments to the row whose key matches
-     * {@code key}, additionally restricted by any conditions in the statement. Returns
-     * the number of rows changed.</p>
-     *
-     * @param namespace  the namespace of the object
-     * @param key        the primary key of the object to update
-     * @param statement  the statement carrying the assignments (and optional conditions)
-     * @return the number of updated rows
-     * @throws IllegalArgumentException if the statement has no assignments or references
-     *                                  an unknown or non-updatable column
-     */
-    public long executeUpdate(String namespace, String key, ObjectStatement statement) {
-        statement.validateFor(ObjectStatement.Operation.UPDATE);
+        boolean byKey = statement.key() != null;
+        statement.validateFor(byKey ? ObjectStatement.Operation.UPDATE_BY_KEY : ObjectStatement.Operation.UPDATE);
 
         List<QueryValue> params = new ArrayList<>();
         List<String> setClauses = new ArrayList<>();
@@ -374,9 +352,9 @@ public abstract class DatabaseManager {
         }
 
         List<String> conditions = new ArrayList<>();
-        if (key != null) {
+        if (byKey) {
             conditions.add("key = ?");
-            params.add(new QueryValue.StringValue(key));
+            params.add(new QueryValue.StringValue(statement.key()));
         }
         conditions.addAll(buildConditions(statement, params));
 
@@ -555,6 +533,18 @@ public abstract class DatabaseManager {
     }
 
     /**
+     * Ensures the statement carries a primary key.
+     *
+     * @param statement  the statement to validate
+     * @throws IllegalArgumentException if the statement has no key
+     */
+    private void requireKey(ObjectStatement statement) {
+        if (statement.key() == null || statement.key().isEmpty()) {
+            throw new IllegalArgumentException("Statement must carry a key");
+        }
+    }
+
+    /**
      * A rendered query: its SQL and the parameters bound to it, in order.
      *
      * @param sql     the SQL statement
@@ -564,28 +554,24 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Builds and executes the INSERT (or UPSERT) statement for an object's metadata.
+     * Persists the metadata row of an object, inserting it or replacing an existing row.
      *
      * <p>Dynamically assembles the column list from the additional key columns and the
-     * standard metadata columns. When {@code overwrite} is {@code true}, the statement
-     * is appended with {@code ON CONFLICT(key) DO UPDATE} to replace existing rows.</p>
+     * standard metadata columns. When {@code overwrite} is {@code false}, the insert
+     * fails if a row with the same key already exists. When {@code overwrite} is
+     * {@code true}, the statement is appended with {@code ON CONFLICT(key) DO UPDATE}
+     * to replace the existing row's metadata columns while access statistics are left
+     * untouched. The metadata is persisted exactly as given, including access statistics
+     * and timestamps; pass an {@link ObjectMetadata} with {@code null} last-access and
+     * zero access count for a fresh insert.</p>
      *
-     * @param namespace        the namespace the object belongs to
-     * @param statement        the statement carrying the primary key and additional key values
-     * @param fileName         the stored file name
-     * @param extension        the file extension
-     * @param size             the size of the file in bytes
-     * @param md5              the MD5 digest of the file contents in hex
-     * @param createdAt        ISO-8601 timestamp of creation
-     * @param storageType      the type of storage (e.g. {@code "DISK"})
-     * @param storageLocation  the location of the file within the file manager
-     * @param overwrite        whether to replace an existing row with the same key
+     * @param namespace  the namespace the object belongs to
+     * @param statement  the statement carrying the primary key and additional key values
+     * @param metadata   the metadata of the object to persist
+     * @param overwrite  whether to replace an existing row with the same key
      * @throws IllegalArgumentException if the statement does not fit an insert or contains an unknown column
      */
-    private void executeInsert(String namespace, ObjectStatement statement,
-                               String fileName, String extension, long size, String md5,
-                               String createdAt, String storageType, String storageLocation,
-                               boolean overwrite) {
+    public void upsertMetadata(String namespace, ObjectStatement statement, ObjectMetadata metadata, boolean overwrite) {
         statement.validateFor(ObjectStatement.Operation.INSERT);
         List<String> columns = new ArrayList<>();
         List<QueryValue> values = new ArrayList<>();
@@ -601,19 +587,23 @@ public abstract class DatabaseManager {
         }
 
         columns.add("file_name");
-        values.add(new QueryValue.StringValue(fileName));
+        values.add(new QueryValue.StringValue(metadata.fileName()));
         columns.add("file_extension");
-        values.add(new QueryValue.StringValue(extension));
+        values.add(new QueryValue.StringValue(metadata.fileExtension()));
         columns.add("file_size");
-        values.add(new QueryValue.LongValue(size));
+        values.add(new QueryValue.LongValue(metadata.fileSize()));
         columns.add("md5");
-        values.add(new QueryValue.StringValue(md5));
+        values.add(new QueryValue.StringValue(metadata.md5()));
         columns.add("created_at");
-        values.add(new QueryValue.StringValue(createdAt));
+        values.add(new QueryValue.StringValue(metadata.createdAt()));
         columns.add("storage_type");
-        values.add(new QueryValue.StringValue(storageType));
+        values.add(new QueryValue.StringValue(metadata.storageType()));
         columns.add("storage_location");
-        values.add(new QueryValue.StringValue(storageLocation));
+        values.add(new QueryValue.StringValue(metadata.storageLocation()));
+        columns.add("last_accessed_at");
+        values.add(new QueryValue.StringValue(metadata.lastAccessedAt()));
+        columns.add("access_count");
+        values.add(new QueryValue.LongValue(metadata.accessCount()));
 
         String placeholders = String.join(", ", Collections.nCopies(columns.size(), "?"));
         StringBuilder sql = new StringBuilder("INSERT INTO ").append(Config.DATABASE_PREFIX).append("_").append(namespace)
@@ -622,7 +612,11 @@ public abstract class DatabaseManager {
         if (overwrite) {
             List<String> updates = new ArrayList<>();
             for (int i = 1; i < columns.size(); i++) {
-                updates.add(columns.get(i) + " = excluded." + columns.get(i));
+                String column = columns.get(i);
+                if (column.equals("last_accessed_at") || column.equals("access_count")) {
+                    continue;
+                }
+                updates.add(column + " = excluded." + column);
             }
             sql.append(" ON CONFLICT(key) DO UPDATE SET ").append(String.join(", ", updates));
         }
