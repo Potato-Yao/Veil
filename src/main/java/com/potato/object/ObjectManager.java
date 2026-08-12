@@ -43,6 +43,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class ObjectManager {
     private static final Set<String> namespaceList = ConcurrentHashMap.newKeySet();
+    private static final Map<String, ObjectManager> instances = new ConcurrentHashMap<>();
     private static final StripedLock keyedLock = new StripedLock();
     private final String namespace;
     private final FileManager mainStorageManager;
@@ -430,6 +431,17 @@ public class ObjectManager {
     }
 
     /**
+     * Returns the {@link ObjectManager} built for the given namespace, or
+     * {@code null} if no manager has been built for it yet.
+     *
+     * @param namespace the namespace to look up
+     * @return the manager bound to the namespace, or {@code null}
+     */
+    public static ObjectManager getInstance(String namespace) {
+        return instances.get(namespace);
+    }
+
+    /**
      * Validates that a location stays within the storage scope.
      *
      * <p>Rejects absolute paths, drive prefixes, backslashes, parent-directory
@@ -584,8 +596,10 @@ public class ObjectManager {
             }
 
             Set<String> extensions = Set.copyOf(allowedExtensions);
-            return new ObjectManager(namespace, configuration.getMainStorageManager(),
+            ObjectManager manager = new ObjectManager(namespace, configuration.getMainStorageManager(),
                     configuration.getCacheManager(), databaseManager, extensions, textMode);
+            instances.put(namespace, manager);
+            return manager;
         }
     }
 }

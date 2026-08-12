@@ -26,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -51,6 +53,19 @@ class ObjectManagerTest {
 
     private static ObjectStatement key(String primaryKey, String userId) {
         return ObjectStatement.builder().key(primaryKey).kv("user_id", userId).build();
+    }
+
+    @Test
+    void getInstanceReturnsBuiltManagerAndNullForUnknownNamespace() {
+        assertSame(objectManager, ObjectManager.getInstance("objects"));
+        assertNull(ObjectManager.getInstance("not_built"));
+    }
+
+    @Test
+    void builtManagerIsRegisteredUnderItsNamespace() {
+        ObjectManager registered = ObjectManager.getInstance("objects");
+        assertNotNull(registered);
+        assertTrue(ObjectManager.checkDuplicateNamespace("objects"));
     }
 
     @Test
