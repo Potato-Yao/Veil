@@ -14,8 +14,11 @@ import com.potato.object.ObjectReference;
 import com.potato.object.ObjectStatement;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 public class Main {
@@ -29,20 +32,43 @@ public class Main {
                 .keyColumn("user_id", KeyType.TEXT)
                 .build();
 
-        // 3. Create an object manager for a namespace.
-        ObjectManager avatarManager = ObjectManager.build("avatar", databaseManager);
+        // 3. Create an object manager for a namespace, restricting accepted file types.
+        ObjectManager avatarManager = ObjectManager.builder()
+                .namespace("avatar")
+                .databaseManager(databaseManager)
+                .allowExtension("png", "jpg", ".jpeg")
+                .build();
+
+        // 3b. A text-mode manager skips the extension check entirely.
+        ObjectManager noteManager = ObjectManager.builder()
+                .namespace("notes")
+                .databaseManager(databaseManager)
+                .textMode(true)
+                .build();
 
         // 4. Store objects; each file lands at ./avatar/<key>_<user_id>.<extension>
         //    (e.g. ./avatar/user456_u1.png) and a metadata
         //    row is inserted into the veil_metadata_avatar table. A statement carries
-        //    the primary key and any additional key values. update() replaces an
-        //    existing object, preserving its access statistics.
-        byte[] data = "hello veil!".getBytes(StandardCharsets.UTF_8);
+        //    the primary key and any additional key values. The sample image is the
+        //    test fixture at src/test/resources/a.png.
+        byte[] avatarBytes = readImage();
         ObjectStatement avatar = ObjectStatement.builder().key("user123").kv("user_id", "u1").build();
-        avatarManager.update(avatar, "avatar.png", new ByteArrayInputStream(data));
-        avatarManager.put(ObjectStatement.builder().key("user456").kv("user_id", "u1").build(),
+        avatarManager.update(avatar, "avatar.png", new ByteArrayInputStream(avatarBytes));
+        avatarManager.update(ObjectStatement.builder().key("user456").kv("user_id", "u1").build(),
                 "banner.png",
-                new ByteArrayInputStream("a longer banner image".getBytes(StandardCharsets.UTF_8)));
+                new ByteArrayInputStream(avatarBytes));
+
+        // 4b. Text mode stores any extension; a plain ObjectManager.build(...) keeps the
+        //     old behavior and accepts every file type.
+        ObjectStatement note = ObjectStatement.builder().key("greeting").kv("user_id", "u1").build();
+        noteManager.update(note, "hello.txt", new ByteArrayInputStream("hello".getBytes(StandardCharsets.UTF_8)));
+        System.out.println("Stored note: " + noteManager.checkExist(note));
+
+        // 4c. Every built manager is registered by namespace; retrieve it at any time.
+        ObjectManager sameAvatar = ObjectManager.getInstance("avatar");
+        System.out.println("getInstance(\"avatar\") is the built manager: " + (sameAvatar == avatarManager));
+        System.out.println("getInstance(\"missing\") returns null: " + (ObjectManager.getInstance("missing") == null));
+        System.out.println("Avatar check via registered manager: " + sameAvatar.checkExist(avatar));
 
         // 5. Retrieve an object: metadata plus a stream of its contents. Each get()
         //    records last_accessed_at and increments access_count.
@@ -55,7 +81,6 @@ public class Main {
         }
 
         // 6. Query the namespace with range and condition filters, ordered by size.
-        //    The same ObjectStatement type also drives updates and batch deletes.
         ObjectStatement statement = ObjectStatement.builder()
                 .where("file_extension", ObjectStatement.Op.EQ, "png")
                 .between("file_size", 1L, 100L)
@@ -86,6 +111,14 @@ public class Main {
         System.out.println("Exists before remove: " + avatarManager.checkExist(avatar));
         avatarManager.remove(avatar);
         System.out.println("Exists after remove: " + avatarManager.checkExist(avatar));
+    }
+
+    private static byte[] readImage() {
+        try {
+            return Files.readAllBytes(Path.of("src/test/resources/a.png"));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 }
 ```

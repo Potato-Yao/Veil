@@ -59,6 +59,12 @@ public class ExampleMain {
         noteManager.update(note, "hello.txt", new ByteArrayInputStream("hello".getBytes(StandardCharsets.UTF_8)));
         System.out.println("Stored note: " + noteManager.checkExist(note));
 
+        // 4c. Every built manager is registered by namespace; retrieve it at any time.
+        ObjectManager sameAvatar = ObjectManager.getInstance("avatar");
+        System.out.println("getInstance(\"avatar\") is the built manager: " + (sameAvatar == avatarManager));
+        System.out.println("getInstance(\"missing\") returns null: " + (ObjectManager.getInstance("missing") == null));
+        System.out.println("Avatar check via registered manager: " + sameAvatar.checkExist(avatar));
+
         // 5. Retrieve an object: metadata plus a stream of its contents. Each get()
         //    records last_accessed_at and increments access_count.
         ObjectData object = avatarManager.get(avatar);
