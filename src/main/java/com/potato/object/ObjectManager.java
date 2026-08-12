@@ -135,7 +135,7 @@ public class ObjectManager {
                 throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
             }
             databaseManager.updateAccess(namespace, statement);
-            InputStream stream = mainStorageManager.read(location);
+            InputStream stream = mainStorageManager.read(metadata.storageLocation());
             return new ObjectData(metadata, stream);
         } finally {
             keyedLock.unlock(location);
@@ -269,14 +269,17 @@ public class ObjectManager {
         validateKv(kv);
         validateExtension(fileName);
         String location = buildLocation(primaryKey, kv);
+        String fileLocation = buildFileLocation(location, fileName);
+        validateLocation(fileLocation);
 
         keyedLock.lock(location);
         try {
             if (!overwrite && databaseManager.getStorageLocation(namespace, statement) != null) {
                 throw new IllegalArgumentException("Object \"" + primaryKey + "\" already exists in namespace \"" + namespace + "\"");
             }
+            String oldLocation = overwrite ? databaseManager.getStorageLocation(namespace, statement) : null;
 
-            String tempLocation = location + ".tmp-" + UUID.randomUUID();
+            String tempLocation = fileLocation + ".tmp-" + UUID.randomUUID();
             try {
                 MessageDigest md5 = MessageDigest.getInstance("MD5");
                 CountingInputStream counting = new CountingInputStream(source);
@@ -287,10 +290,13 @@ public class ObjectManager {
                 long size = counting.getByteCount();
                 String md5Hex = HexFormat.of().formatHex(md5.digest());
                 ObjectMetadata metadata = new ObjectMetadata(fileName, extractExtension(fileName), size, md5Hex,
-                        Instant.now().toString(), null, "DISK", location, 0);
+                        Instant.now().toString(), null, "DISK", fileLocation, 0);
                 databaseManager.upsertMetadata(namespace, statement, metadata, overwrite);
 
-                mainStorageManager.rename(tempLocation, location);
+                mainStorageManager.rename(tempLocation, fileLocation);
+                if (oldLocation != null && !oldLocation.equals(fileLocation)) {
+                    mainStorageManager.delete(oldLocation);
+                }
             } catch (NoSuchAlgorithmException e) {
                 throw new RuntimeException(e);
             } catch (RuntimeException e) {
@@ -300,6 +306,19 @@ public class ObjectManager {
         } finally {
             keyedLock.unlock(location);
         }
+    }
+
+    /**
+     * Appends the file name's extension to a storage location.
+     *
+     * @param location  the extension-less storage location
+     * @param fileName  the original file name
+     * @return the location with the extension appended, or {@code location} unchanged
+     * if the file name has no extension
+     */
+    private static String buildFileLocation(String location, String fileName) {
+        String extension = extractExtension(fileName);
+        return extension.isEmpty() ? location : location + "." + extension;
     }
 
     /**
@@ -344,6 +363,8 @@ public class ObjectManager {
      * Builds the storage location for an object as {@code namespace/<key>} where
      * {@code <key>} is the primary key followed by {@code _value} for each provided
      * additional key column, in the order the columns are defined in the database.
+     * The file name's extension is appended at store time, so an object stored as
+     * {@code photo.png} lands at {@code namespace/<key>_<value>.png}.</p>
      *
      * @param primaryKey the primary key of the object
      * @param kv         the additional key values, or {@code null}
@@ -372,7 +393,7 @@ public class ObjectManager {
      * @param fileName the file name to inspect
      * @return the extension, or an empty string if the name has no dot
      */
-    private String extractExtension(String fileName) {
+    private static String extractExtension(String fileName) {
         int dot = fileName.lastIndexOf('.');
         return dot == -1 ? "" : fileName.substring(dot + 1);
     }

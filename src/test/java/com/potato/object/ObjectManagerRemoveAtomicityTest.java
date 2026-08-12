@@ -61,7 +61,7 @@ class ObjectManagerRemoveAtomicityTest {
         }
         ObjectMetadata before = databaseManager.getMetadata("remove_atomic", key(primaryKey, "u1"));
 
-        fileManager.failOn("remove_atomic/" + primaryKey + "_u1");
+        fileManager.failOn("remove_atomic/" + primaryKey + "_u1.txt");
         assertThrows(RuntimeException.class, () -> objectManager.remove(key(primaryKey, "u1")));
 
         ObjectMetadata after = databaseManager.getMetadata("remove_atomic", key(primaryKey, "u1"));
@@ -70,7 +70,7 @@ class ObjectManagerRemoveAtomicityTest {
         assertEquals(before.storageLocation(), after.storageLocation());
         assertEquals(before.lastAccessedAt(), after.lastAccessedAt());
         assertEquals(before.accessCount(), after.accessCount());
-        assertTrue(Files.exists(tempDir.resolve("remove_atomic/obj_u1")));
+        assertTrue(Files.exists(tempDir.resolve("remove_atomic/obj_u1.txt")));
     }
 
     /**

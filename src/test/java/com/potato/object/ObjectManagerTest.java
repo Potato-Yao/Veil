@@ -73,7 +73,7 @@ class ObjectManagerTest {
 
         objectManager.put(key(primaryKey, "u7"), fileName, new ByteArrayInputStream(data));
 
-        Path stored = tempDir.resolve("objects/obj1_u7");
+        Path stored = tempDir.resolve("objects/obj1_u7.png");
         assertTrue(Files.exists(stored));
         assertArrayEquals(data, Files.readAllBytes(stored));
 
@@ -91,9 +91,31 @@ class ObjectManagerTest {
             assertEquals(data.length, resultSet.getLong("file_size"));
             assertEquals(md5Hex, resultSet.getString("md5"));
             assertEquals("DISK", resultSet.getString("storage_type"));
-            assertEquals("objects/obj1_u7", resultSet.getString("storage_location"));
+            assertEquals("objects/obj1_u7.png", resultSet.getString("storage_location"));
             assertFalse(resultSet.next());
         }
+    }
+
+    @Test
+    void putStoresRealPngWithMatchingBytesAndExtension() throws Exception {
+        byte[] data;
+        try (var in = getClass().getResourceAsStream("/a.png")) {
+            assertNotNull(in);
+            data = in.readAllBytes();
+        }
+        String primaryKey = "pic";
+        String fileName = "a.png";
+
+        objectManager.put(key(primaryKey, "u1"), fileName, new ByteArrayInputStream(data));
+
+        Path stored = tempDir.resolve("objects/pic_u1.png");
+        assertTrue(Files.exists(stored));
+        assertArrayEquals(data, Files.readAllBytes(stored));
+
+        ObjectMetadata metadata = databaseManager.getMetadata("objects", key(primaryKey, "u1"));
+        assertEquals("png", metadata.fileExtension());
+        assertEquals("objects/pic_u1.png", metadata.storageLocation());
+        assertEquals(data.length, metadata.fileSize());
     }
 
     @Test
@@ -113,7 +135,7 @@ class ObjectManagerTest {
         objectManager.put(key(primaryKey, "u3"), fileName, new ByteArrayInputStream(first));
         objectManager.update(key(primaryKey, "u3"), fileName, new ByteArrayInputStream(second));
 
-        Path stored = tempDir.resolve("objects/obj3_u3");
+        Path stored = tempDir.resolve("objects/obj3_u3.txt");
         assertArrayEquals(second, Files.readAllBytes(stored));
         assertEquals(second.length, Files.size(stored));
 
@@ -141,8 +163,8 @@ class ObjectManagerTest {
         objectManager.put(key(primaryKey, "u4"), fileName, new ByteArrayInputStream(first));
         objectManager.update(key(primaryKey, "u4b"), fileName, new ByteArrayInputStream(second));
 
-        assertArrayEquals(first, Files.readAllBytes(tempDir.resolve("objects/obj4_u4")));
-        assertArrayEquals(second, Files.readAllBytes(tempDir.resolve("objects/obj4_u4b")));
+        assertArrayEquals(first, Files.readAllBytes(tempDir.resolve("objects/obj4_u4.txt")));
+        assertArrayEquals(second, Files.readAllBytes(tempDir.resolve("objects/obj4_u4b.txt")));
         assertTrue(objectManager.checkExist(key(primaryKey, "u4")));
         assertTrue(objectManager.checkExist(key(primaryKey, "u4b")));
     }
@@ -160,7 +182,7 @@ class ObjectManagerTest {
             assertEquals("txt", object.metadata().fileExtension());
             assertEquals(data.length, object.metadata().fileSize());
             assertEquals("DISK", object.metadata().storageType());
-            assertEquals("objects/obj5_u5", object.metadata().storageLocation());
+            assertEquals("objects/obj5_u5.txt", object.metadata().storageLocation());
             assertArrayEquals(data, object.stream().readAllBytes());
         }
     }
@@ -178,10 +200,10 @@ class ObjectManagerTest {
         String fileName = "bye.txt";
 
         objectManager.put(key(primaryKey, "u6"), fileName, new ByteArrayInputStream(data));
-        assertTrue(Files.exists(tempDir.resolve("objects/obj6_u6")));
+        assertTrue(Files.exists(tempDir.resolve("objects/obj6_u6.txt")));
 
         assertTrue(objectManager.remove(key(primaryKey, "u6")));
-        assertFalse(Files.exists(tempDir.resolve("objects/obj6_u6")));
+        assertFalse(Files.exists(tempDir.resolve("objects/obj6_u6.txt")));
 
         try (var connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
@@ -353,7 +375,7 @@ class ObjectManagerTest {
         assertEquals("renamed.png", afterName.fileName());
         assertEquals("png", afterName.fileExtension());
         assertEquals(data.length, afterName.fileSize());
-        assertEquals("meta/meta1_uM", afterName.storageLocation());
+        assertEquals("meta/meta1_uM.png", afterName.storageLocation());
         assertEquals(0, afterName.accessCount());
 
         metaManager.updateMetadata(ObjectStatement.builder().key(primaryKey).kv("user_id", "uM")
@@ -487,12 +509,12 @@ class ObjectManagerTest {
 
         assertTrue(manager.checkExist(key("shared", "u1")));
         assertTrue(manager.checkExist(key("shared", "u2")));
-        assertEquals("identity/shared_u1",
+        assertEquals("identity/shared_u1.png",
                 databaseManager.getStorageLocation("identity", key("shared", "u1")));
-        assertEquals("identity/shared_u2",
+        assertEquals("identity/shared_u2.png",
                 databaseManager.getStorageLocation("identity", key("shared", "u2")));
-        assertTrue(Files.exists(tempDir.resolve("identity/shared_u1")));
-        assertTrue(Files.exists(tempDir.resolve("identity/shared_u2")));
+        assertTrue(Files.exists(tempDir.resolve("identity/shared_u1.png")));
+        assertTrue(Files.exists(tempDir.resolve("identity/shared_u2.png")));
         assertEquals(2, databaseManager.count("identity", ObjectStatement.builder().build()));
     }
 
@@ -537,7 +559,7 @@ class ObjectManagerTest {
         try (ObjectData object = manager.get(tenant)) {
             assertArrayEquals("data".getBytes(), object.stream().readAllBytes());
         }
-        assertEquals("long_key/doc1_7",
+        assertEquals("long_key/doc1_7.txt",
                 longDb.getStorageLocation("long_key", tenant));
 
         ObjectStatement otherTenant = ObjectStatement.builder().key("doc1").kv("tenant_id", "8").build();
@@ -713,7 +735,7 @@ class ObjectManagerTest {
         assertThrows(IllegalArgumentException.class, () ->
                 manager.put(key("obj", "u1"), "b.txt", new ByteArrayInputStream("clobber".getBytes())));
 
-        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("put_dup/obj_u1")));
+        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("put_dup/obj_u1.txt")));
         assertEquals(1, tempFilesUnder("put_dup").size());
     }
 
@@ -728,7 +750,7 @@ class ObjectManagerTest {
         assertThrows(RuntimeException.class, () ->
                 manager.update(key("obj", "u1"), "b.txt", new ByteArrayInputStream("new version".getBytes())));
 
-        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_fail/obj_u1")));
+        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_fail/obj_u1.txt")));
         assertEquals(original.length, databaseManager.getMetadata("update_fail", key("obj", "u1")).fileSize());
         assertEquals(1, tempFilesUnder("update_fail").size());
     }
@@ -744,10 +766,10 @@ class ObjectManagerTest {
         assertThrows(RuntimeException.class, () ->
                 manager.update(key("obj", "uB"), "b.txt", new ByteArrayInputStream("new file".getBytes())));
 
-        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_reloc/obj_uA")));
-        assertEquals("update_reloc/obj_uA",
+        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_reloc/obj_uA.txt")));
+        assertEquals("update_reloc/obj_uA.txt",
                 databaseManager.getStorageLocation("update_reloc", key("obj", "uA")));
-        assertFalse(Files.exists(tempDir.resolve("update_reloc/obj_uB")));
+        assertFalse(Files.exists(tempDir.resolve("update_reloc/obj_uB.txt")));
     }
 
     @Test
@@ -760,7 +782,7 @@ class ObjectManagerTest {
 
         assertThrows(RuntimeException.class, () -> manager.remove(key("obj", "u1")));
 
-        assertArrayEquals(data, Files.readAllBytes(tempDir.resolve("remove_fail/obj_u1")));
+        assertArrayEquals(data, Files.readAllBytes(tempDir.resolve("remove_fail/obj_u1.txt")));
         assertNotNull(databaseManager.getMetadata("remove_fail", key("obj", "u1")));
     }
 

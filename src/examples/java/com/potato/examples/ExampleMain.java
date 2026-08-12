@@ -9,8 +9,11 @@ import com.potato.object.ObjectReference;
 import com.potato.object.ObjectStatement;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 public class ExampleMain {
@@ -38,20 +41,22 @@ public class ExampleMain {
                 .textMode(true)
                 .build();
 
-        // 4. Store objects; each file lands at ./avatar/<key>_<user_id> and a metadata
+        // 4. Store objects; each file lands at ./avatar/<key>_<user_id>.<extension>
+        //    (e.g. ./avatar/user456_u1.png) and a metadata
         //    row is inserted into the veil_metadata_avatar table. A statement carries
-        //    the primary key and any additional key values.
-        byte[] data = "hello veil!".getBytes(StandardCharsets.UTF_8);
+        //    the primary key and any additional key values. The sample image is the
+        //    test fixture at src/test/resources/a.png.
+        byte[] avatarBytes = readImage();
         ObjectStatement avatar = ObjectStatement.builder().key("user123").kv("user_id", "u1").build();
-        avatarManager.update(avatar, "avatar.png", new ByteArrayInputStream(data));
-        avatarManager.put(ObjectStatement.builder().key("user456").kv("user_id", "u1").build(),
+        avatarManager.update(avatar, "avatar.png", new ByteArrayInputStream(avatarBytes));
+        avatarManager.update(ObjectStatement.builder().key("user456").kv("user_id", "u1").build(),
                 "banner.png",
-                new ByteArrayInputStream("a longer banner image".getBytes(StandardCharsets.UTF_8)));
+                new ByteArrayInputStream(avatarBytes));
 
         // 4b. Text mode stores any extension; a plain ObjectManager.build(...) keeps the
         //     old behavior and accepts every file type.
         ObjectStatement note = ObjectStatement.builder().key("greeting").kv("user_id", "u1").build();
-        noteManager.put(note, "hello.txt", new ByteArrayInputStream("hello".getBytes(StandardCharsets.UTF_8)));
+        noteManager.update(note, "hello.txt", new ByteArrayInputStream("hello".getBytes(StandardCharsets.UTF_8)));
         System.out.println("Stored note: " + noteManager.checkExist(note));
 
         // 5. Retrieve an object: metadata plus a stream of its contents. Each get()
@@ -95,5 +100,13 @@ public class ExampleMain {
         System.out.println("Exists before remove: " + avatarManager.checkExist(avatar));
         avatarManager.remove(avatar);
         System.out.println("Exists after remove: " + avatarManager.checkExist(avatar));
+    }
+
+    private static byte[] readImage() {
+        try {
+            return Files.readAllBytes(Path.of("src/test/resources/a.png"));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

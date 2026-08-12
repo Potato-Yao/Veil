@@ -32,7 +32,8 @@ public class Main {
         // 3. Create an object manager for a namespace.
         ObjectManager avatarManager = ObjectManager.build("avatar", databaseManager);
 
-        // 4. Store objects; each file lands at ./avatar/<key>_<user_id> and a metadata
+        // 4. Store objects; each file lands at ./avatar/<key>_<user_id>.<extension>
+        //    (e.g. ./avatar/user456_u1.png) and a metadata
         //    row is inserted into the veil_metadata_avatar table. A statement carries
         //    the primary key and any additional key values. update() replaces an
         //    existing object, preserving its access statistics.

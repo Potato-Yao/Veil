@@ -142,10 +142,10 @@ class PostgresDatabaseManagerTest {
         objectManager.update(ObjectStatement.builder().key(key).kv("user_id", "u1").build(),
                 "avatar.png", new ByteArrayInputStream(data));
 
-        Path stored = tempDir.resolve(NAMESPACE + "/user123_u1");
+        Path stored = tempDir.resolve(NAMESPACE + "/user123_u1.png");
         assertTrue(Files.exists(stored));
         assertArrayEquals(data, Files.readAllBytes(stored));
-        assertEquals(NAMESPACE + "/user123_u1",
+        assertEquals(NAMESPACE + "/user123_u1.png",
                 databaseManager.getStorageLocation(NAMESPACE,
                         ObjectStatement.builder().key(key).kv("user_id", "u1").build()));
     }
