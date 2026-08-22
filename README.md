@@ -138,17 +138,17 @@ To run the example application in `src/examples`:
 ./gradlew runExample
 ```
 
-To publish to a Maven repository of your choice:
+To publish a release to Maven Central (see below for the required credentials):
 
 ```bash
-./gradlew publish
+./gradlew publishAggregationToCentralPortal
 ```
 
 ### Gradle
 
 ```kotlin
 dependencies {
-    implementation("com.potato:Veil:1.0-SNAPSHOT")
+    implementation("io.github.potato-yao:veil:0.1.0")
 }
 ```
 
@@ -156,10 +156,32 @@ dependencies {
 
 ```xml
 <dependency>
-    <groupId>com.potato</groupId>
-    <artifactId>Veil</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <groupId>io.github.potato-yao</groupId>
+    <artifactId>veil</artifactId>
+    <version>0.1.0</version>
 </dependency>
+```
+
+### Publishing setup
+
+Publishing targets the Central Portal at `central.sonatype.com` and requires the
+following one-time setup:
+
+1. Sign in to [central.sonatype.com](https://central.sonatype.com) with your GitHub
+   account; the `io.github.potato-yao` namespace is provisioned automatically.
+2. Generate a Portal User Token (top-right menu -> "Generate User Token").
+3. Create a GPG RSA-4096 key and upload its public key
+   (`gpg --keyserver keys.openpgp.org --send-key <KEY_ID>`).
+
+Then configure credentials and signing in `~/.gradle/gradle.properties` (never commit
+secrets):
+
+```properties
+centralPortalUsername=<portal token username>
+centralPortalPassword=<portal token password>
+signing.gnupg.keyName=<GPG KEY_ID>
+signing.gnupg.passphrase=<GPG passphrase>
+signing.gnupg.executable=gpg
 ```
 
 > **Note:** `VeilConfiguration` must be initialized before any `ObjectManager` is built.
