@@ -1,10 +1,11 @@
 plugins {
     `java-library`
     `maven-publish`
+    signing
 }
 
-group = "com.potato"
-version = "1.0-SNAPSHOT"
+group = "io.github.potato-yao"
+version = "0.1.0"
 
 repositories {
     mavenCentral()
@@ -45,10 +46,34 @@ publishing {
 
             pom {
                 name = "Veil"
-                description = "A Java file management library"
+                description = "A Java library for storing and managing files with metadata"
+                url = "https://github.com/Potato-Yao/Veil"
+                licenses {
+                    license {
+                        name = "The Apache License, Version 2.0"
+                        url = "http://www.apache.org/licenses/LICENSE-2.0.txt"
+                    }
+                }
+                developers {
+                    developer {
+                        id = "potato-yao"
+                        name = "potato-yao"
+                        url = "https://github.com/Potato-Yao"
+                    }
+                }
+                scm {
+                    connection = "scm:git:git://github.com/Potato-Yao/Veil.git"
+                    developerConnection = "scm:git:ssh://github.com/Potato-Yao/Veil.git"
+                    url = "https://github.com/Potato-Yao/Veil"
+                }
             }
         }
     }
+}
+
+signing {
+    useGpgCmd()
+    sign(publishing.publications["mavenJava"])
 }
 
 tasks.test {
