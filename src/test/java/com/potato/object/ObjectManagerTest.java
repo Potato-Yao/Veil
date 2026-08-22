@@ -255,6 +255,7 @@ class ObjectManagerTest {
         }
         try (ObjectData ignored = objectManager.get(key(primaryKey, "u8"))) {
         }
+        databaseManager.flushAccessStats();
 
         try (var connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
@@ -272,11 +273,17 @@ class ObjectManagerTest {
         String primaryKey = "obj10";
 
         objectManager.put(key(primaryKey, "u10"), "count.txt", new ByteArrayInputStream("count".getBytes()));
+        databaseManager.flushAccessStats();
         try (ObjectData object = objectManager.get(key(primaryKey, "u10"))) {
             assertEquals(0, object.metadata().accessCount());
         }
+        databaseManager.flushAccessStats();
         try (ObjectData object = objectManager.get(key(primaryKey, "u10"))) {
             assertEquals(1, object.metadata().accessCount());
+        }
+        databaseManager.flushAccessStats();
+        try (ObjectData object = objectManager.get(key(primaryKey, "u10"))) {
+            assertEquals(2, object.metadata().accessCount());
         }
     }
 
@@ -288,6 +295,7 @@ class ObjectManagerTest {
         objectManager.put(key(primaryKey, "u9"), fileName, new ByteArrayInputStream("original".getBytes()));
         try (ObjectData ignored = objectManager.get(key(primaryKey, "u9"))) {
         }
+        databaseManager.flushAccessStats();
         objectManager.update(key(primaryKey, "u9"), fileName, new ByteArrayInputStream("new version".getBytes()));
 
         try (var connection = dataSource.getConnection();

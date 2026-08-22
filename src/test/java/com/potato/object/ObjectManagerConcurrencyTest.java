@@ -25,6 +25,7 @@ import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ObjectManagerConcurrencyTest {
@@ -124,6 +125,52 @@ class ObjectManagerConcurrencyTest {
         assertEquals(expectedSize, metadata.fileSize(), "metadata size must match file bytes");
         assertEquals(HexFormat.of().formatHex(md5(bytes)), metadata.md5(), "metadata md5 must match file bytes");
         assertEquals("objects/" + primaryKey + "_u1.bin", metadata.storageLocation());
+    }
+
+    @Test
+    void concurrentGetsFlushAggregatedAccessStatistics() throws Exception {
+        String primaryKey = "access-stats";
+        int readers = 6;
+        int readsPerThread = 100;
+
+        objectManager.put(key(primaryKey, "u1"), "data.bin",
+                new ByteArrayInputStream("stats".getBytes(StandardCharsets.UTF_8)));
+
+        ExecutorService executor = Executors.newFixedThreadPool(readers);
+        try {
+            CountDownLatch start = new CountDownLatch(1);
+            var futures = IntStream.range(0, readers)
+                    .mapToObj(i -> (Future<?>) executor.submit(() -> {
+                        try {
+                            start.await();
+                            for (int j = 0; j < readsPerThread; j++) {
+                                try (ObjectData ignored = objectManager.get(key(primaryKey, "u1"))) {
+                                    // Reading the stream is enough for this test; the
+                                    // access delta must be aggregated in memory.
+                                }
+                            }
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        } catch (java.io.IOException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }))
+                    .toList();
+            start.countDown();
+            for (Future<?> future : futures) {
+                future.get();
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        databaseManager.flushAccessStats();
+
+        ObjectMetadata metadata = databaseManager.getMetadata("objects", key(primaryKey, "u1"));
+        assertNotNull(metadata);
+        assertEquals((long) readers * readsPerThread, metadata.accessCount(),
+                "one batched flush must persist every recorded access");
+        assertNotNull(metadata.lastAccessedAt());
     }
 
     @Test

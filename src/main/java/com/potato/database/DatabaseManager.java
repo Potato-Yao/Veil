@@ -1,5 +1,6 @@
 package com.potato.database;
 
+import com.potato.object.ObjectManager;
 import com.potato.object.ObjectMetadata;
 import com.potato.object.ObjectReference;
 import com.potato.object.ObjectStatement;
@@ -31,13 +32,14 @@ import java.util.Map;
  * {@link SqliteDatabaseManager} and {@link PostgresDatabaseManager} for the SQLite- and
  * PostgreSQL-based implementations.</p>
  */
-public abstract class DatabaseManager {
+public abstract class DatabaseManager implements AutoCloseable {
     protected final DataSource dataSource;
     protected final ArrayList<String> keyColumns;
     protected final ArrayList<String> additionalKeyColumnNames;
     protected final Map<String, KeyType> keyTypes;
     protected final ArrayList<String> metadataColumns;
     protected final ArrayList<String> metadataColumnNames;
+    private final AccessStatsTracker accessStatsTracker;
 
     public DatabaseManager(DataSource dataSource, HashMap<String, KeyType> keyColumns) {
         this.dataSource = dataSource;
@@ -65,6 +67,8 @@ public abstract class DatabaseManager {
         addMetadataColumn("storage_type", "TEXT NOT NULL");
         addMetadataColumn("storage_location", "TEXT NOT NULL");
         addMetadataColumn("access_count", "INTEGER NOT NULL DEFAULT 0");
+
+        this.accessStatsTracker = new AccessStatsTracker(this::applyAccessStats);
     }
 
     /**
@@ -245,13 +249,19 @@ public abstract class DatabaseManager {
     }
 
     /**
-     * Records access to the object with the given identity, updating its last access
-     * timestamp and incrementing its access count.
+     * Records access to the object with the given identity immediately, updating its
+     * last access timestamp and incrementing its access count in the database.
+     *
+     * <p>This is a synchronous single-row write and should not be used on the hot read
+     * path. {@link ObjectManager#get(ObjectStatement)} uses {@link #recordAccess(String,
+     * ObjectStatement)} instead, which accumulates accesses in memory and flushes them
+     * in batches.</p>
      *
      * @param namespace  the namespace of the object
      * @param statement  the statement carrying the full identity (primary key and
      *                   additional key values)
      * @throws IllegalArgumentException if the statement does not carry the full identity
+     * @see #recordAccess(String, ObjectStatement)
      */
     public void updateAccess(String namespace, ObjectStatement statement) {
         requireIdentity(statement);
@@ -267,6 +277,42 @@ public abstract class DatabaseManager {
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * Records an object access in memory.
+     *
+     * <p>This method performs no database I/O and never fails a read because access
+     * statistics are unavailable. Recorded deltas are persisted in batches by
+     * {@link #flushAccessStats()} or by the background flusher.</p>
+     *
+     * @param namespace  the namespace of the object
+     * @param statement  the statement carrying the full identity (primary key and
+     *                   additional key values)
+     * @throws IllegalArgumentException if the statement does not carry the full identity
+     */
+    public void recordAccess(String namespace, ObjectStatement statement) {
+        requireIdentity(statement);
+        accessStatsTracker.record(new AccessStatsTracker.ObjectId(namespace, statement.key(), statement.kv()));
+    }
+
+    /**
+     * Flushes all recorded access-statistic deltas to the database in one transaction.
+     *
+     * <p>Updates are grouped by namespace and executed as JDBC batches, so a flush
+     * uses one connection regardless of how many objects were accessed since the last
+     * flush. Access counts and last-access timestamps are eventually consistent.</p>
+     */
+    public void flushAccessStats() {
+        accessStatsTracker.flush();
+    }
+
+    /**
+     * Stops background access-statistic flushing and performs a final best-effort flush.
+     */
+    @Override
+    public void close() {
+        accessStatsTracker.close();
     }
 
     /**
@@ -428,6 +474,86 @@ public abstract class DatabaseManager {
             return statement.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Persists drained access-statistic deltas in one transaction.
+     *
+     * <p>The updates are grouped by namespace and submitted as JDBC batches. A flush
+     * for many objects therefore uses one connection, one transaction, and one prepared
+     * statement per namespace.</p>
+     *
+     * @param stats the access deltas to persist, keyed by full object identity
+     */
+    private void applyAccessStats(Map<AccessStatsTracker.ObjectId, AccessStatsTracker.AccessStat> stats) {
+        Map<String, List<Map.Entry<AccessStatsTracker.ObjectId, AccessStatsTracker.AccessStat>>> byNamespace = new HashMap<>();
+        for (Map.Entry<AccessStatsTracker.ObjectId, AccessStatsTracker.AccessStat> entry : stats.entrySet()) {
+            byNamespace.computeIfAbsent(entry.getKey().namespace(), ignored -> new ArrayList<>()).add(entry);
+        }
+
+        try (Connection connection = getConnection()) {
+            boolean autoCommit = connection.getAutoCommit();
+            try {
+                connection.setAutoCommit(false);
+                try {
+                    for (Map.Entry<String, List<Map.Entry<AccessStatsTracker.ObjectId, AccessStatsTracker.AccessStat>>> namespaceEntry
+                            : byNamespace.entrySet()) {
+                        applyAccessStats(connection, namespaceEntry.getKey(), namespaceEntry.getValue());
+                    }
+                    connection.commit();
+                } catch (SQLException e) {
+                    try {
+                        connection.rollback();
+                    } catch (SQLException rollbackFailure) {
+                        e.addSuppressed(rollbackFailure);
+                    }
+                    throw new RuntimeException(e);
+                }
+            } finally {
+                try {
+                    connection.setAutoCommit(autoCommit);
+                } catch (SQLException ignored) {
+                    // The connection is about to be closed; there is nothing left to recover.
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Batches access-statistic updates for one namespace.
+     *
+     * @param connection  the transaction connection to use
+     * @param namespace   the namespace table to update
+     * @param entries     the identities and deltas to persist
+     * @throws SQLException if the batch cannot be executed
+     */
+    private void applyAccessStats(Connection connection, String namespace,
+                                  List<Map.Entry<AccessStatsTracker.ObjectId, AccessStatsTracker.AccessStat>> entries)
+            throws SQLException {
+        StringBuilder sql = new StringBuilder("UPDATE ").append(Config.DATABASE_PREFIX).append("_").append(namespace)
+                .append(" SET last_accessed_at = ?, access_count = access_count + ? WHERE key = ?");
+        for (String column : additionalKeyColumnNames) {
+            sql.append(" AND ").append(column).append(" = ?");
+        }
+
+        try (PreparedStatement preparedStatement = connection.prepareStatement(sql.toString())) {
+            for (Map.Entry<AccessStatsTracker.ObjectId, AccessStatsTracker.AccessStat> entry : entries) {
+                AccessStatsTracker.ObjectId id = entry.getKey();
+                AccessStatsTracker.AccessStat stat = entry.getValue();
+
+                int index = 1;
+                preparedStatement.setString(index++, Instant.ofEpochMilli(stat.lastAccessMillis()).toString());
+                preparedStatement.setLong(index++, stat.count());
+                preparedStatement.setString(index++, id.key());
+                for (String column : additionalKeyColumnNames) {
+                    keyValue(column, id.kv().get(column)).bind(preparedStatement, index++);
+                }
+                preparedStatement.addBatch();
+            }
+            preparedStatement.executeBatch();
         }
     }
 

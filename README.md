@@ -71,7 +71,8 @@ public class Main {
         System.out.println("Avatar check via registered manager: " + sameAvatar.checkExist(avatar));
 
         // 5. Retrieve an object: metadata plus a stream of its contents. Each get()
-        //    records last_accessed_at and increments access_count.
+        //    records access statistics in memory; they are flushed to the database
+        //    in periodic batches rather than with a synchronous write per read.
         ObjectData object = avatarManager.get(avatar);
         try (InputStream stream = object.stream()) {
             byte[] content = stream.readAllBytes();
@@ -182,6 +183,14 @@ remove it and store it again.
 Mutations of the same object (`put`, `update`, `remove`, `updateMetadata`, `get`) are
 serialized through a bounded striped lock, so concurrent operations on one key never
 interleave while distinct keys run in parallel.
+
+Access statistics (`access_count` and `last_accessed_at`) are accumulated in memory
+when objects are read and flushed to the database in batched transactions about once
+per second, so reads do not perform a synchronous database write. Call
+`DatabaseManager.flushAccessStats()` to force a flush, for example before reading the
+statistics directly or before shutting down (`DatabaseManager` implements
+`AutoCloseable`; `close()` performs a final best-effort flush and stops the flusher).
+Statistics are eventually consistent: unflushed deltas are lost if the JVM crashes.
 
 Every `DatabaseManager` operation opens one connection from the supplied `DataSource`.
 For production you should provide a pooled `DataSource` (for example HikariCP) rather

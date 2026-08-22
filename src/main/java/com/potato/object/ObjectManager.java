@@ -119,7 +119,10 @@ public class ObjectManager {
      * Retrieves a stored object.
      *
      * <p>Returns the object's metadata together with an {@link InputStream} of its
-     * contents. The caller is responsible for closing the returned stream.</p>
+     * contents. The caller is responsible for closing the returned stream. The access
+     * is recorded in memory and persisted later in a batched flush; the returned
+     * metadata therefore reflects the last flushed access statistics, not necessarily
+     * this read.</p>
      *
      * @param statement the statement carrying the primary key (and additional key values)
      * @return the object's metadata and content stream
@@ -135,7 +138,7 @@ public class ObjectManager {
             if (metadata == null) {
                 throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
             }
-            databaseManager.updateAccess(namespace, statement);
+            databaseManager.recordAccess(namespace, statement);
             InputStream stream = mainStorageManager.read(metadata.storageLocation());
             return new ObjectData(metadata, stream);
         } finally {

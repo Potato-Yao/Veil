@@ -129,10 +129,10 @@ One JVM simplifies coordination, but it does not eliminate:
 - Use PostgreSQL-native timestamp and UUID types.
 - Add formal schema migrations.
 - Avoid one synchronous metadata write for every download.
-  updateAccess() currently performs a database update on every read: DatabaseManager.java:246-256. Under heavy read traffic this can become the main bottleneck.
-  Instead:
-- Record access counts in memory using LongAdder-style counters.
-- Periodically flush aggregated deltas.
+  Implemented: `ObjectManager.get()` records accesses in `AccessStatsTracker` using
+  `LongAdder`-style counters, and a daemon flusher persists periodic JDBC batches.
+  `updateAccess()` remains available only for explicit synchronous use.
+  Remaining optional refinements:
 - Sample last-access updates.
 - Accept approximate access counts for caching and archival decisions.
 - Keep exact access events only if auditing requires them.
@@ -179,7 +179,7 @@ One JVM simplifies coordination, but it does not eliminate:
 6. Replace unlimited list queries and offset pagination.
 7. Fix batch deletion using bounded cursor-based jobs.
 8. Add connection pooling, timeouts, and backpressure.
-9. Aggregate access statistics asynchronously.
+9. Aggregate access statistics asynchronously. (done via `AccessStatsTracker`)
 10. Add reconciliation, orphan cleanup, metrics, and failure-injection tests.
     Under the one-JVM assumption, Veil does not need distributed locking, service discovery, or cross-node cache coherence. Its central challenge is instead building a bounded, crash-recoverable, concurrency-safe pipeline between PostgreSQL and high-volume byte storage.
 
@@ -193,7 +193,7 @@ Missing features (from requirements.md)
 6. Metadata committed before file is in place (issues.md #2, still open). store() does upsertMetadata(READY) → then rename (ObjectManager.java:324-326). Crash between them leaves metadata pointing at a missing file; rename failure isn't handled (only temp cleanup), no lifecycle status (UPLOADING/READY/DELETING), no version column, no optimistic locking.
 7. removeAll still unbounded — loads all rows into a list (ObjectManager.java:257) then runs one DELETE ignoring limit; diverges from query paging, risks orphan files / memory blowup at scale.
 8. updateMetadata lets you corrupt metadata — validateUpdateColumn only excludes key columns, so md5, file_size, storage_location, storage_type, created_at, access_count are all settable without touching content; breaks the md5==bytes invariant the concurrency tests assert.
-9. Synchronous UPDATE on every get() — DatabaseManager.java:237 writes last_accessed_at/access_count per read; the documented bottleneck, unchanged.
+9. ~~Synchronous UPDATE on every get()~~ — fixed: `ObjectManager.get()` now uses `DatabaseManager.recordAccess()`, which accumulates deltas in `AccessStatsTracker` and flushes them in periodic JDBC batches. `updateAccess()` remains only as an explicit synchronous write.
 10. DiskFileManager.resolve() still only normalizes (DiskFileManager.java:148) — no startswith-root containment, no symlink defense, no exists/size.
 11. No backpressure/scalability — no max upload size, concurrency limits, cursor pagination (still offset), query limits, or timeouts.
     Lower priority
