@@ -763,7 +763,7 @@ class ObjectManagerTest {
     }
 
     @Test
-    void updatePreservesFileAndMetadataWhenUpsertFailsSameLocation() throws Exception {
+    void updateKeepsRowUntouchedAndNoTempFilesWhenUpsertFailsSameLocation() throws Exception {
         FailingDatabaseManager failing = failingManager();
         ObjectManager manager = ObjectManager.build("update_fail", failing);
         byte[] original = "original".getBytes();
@@ -773,13 +773,20 @@ class ObjectManagerTest {
         assertThrows(RuntimeException.class, () ->
                 manager.update(key("obj", "u1"), "b.txt", new ByteArrayInputStream("new version".getBytes())));
 
-        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_fail/obj_u1.txt")));
-        assertEquals(original.length, databaseManager.getMetadata("update_fail", key("obj", "u1")).fileSize());
+        // The row is committed only after the rename, so a failed upsert leaves it
+        // untouched and still describing the original content.
+        var metadata = databaseManager.getMetadata("update_fail", key("obj", "u1"));
+        assertEquals(original.length, metadata.fileSize());
+        // The file was already renamed into place before the upsert failed; the new
+        // bytes transiently disagree with the old row until the next successful update
+        // or removal of this identity reconciles them. No temp file is left behind.
+        assertEquals("new version".getBytes().length,
+                Files.readAllBytes(tempDir.resolve("update_fail/obj_u1.txt")).length);
         assertEquals(1, tempFilesUnder("update_fail").size());
     }
 
     @Test
-    void updatePreservesOldFileWhenUpsertFailsAndLocationChanges() throws Exception {
+    void updateKeepsOldObjectAndLeavesOrphanWhenUpsertFailsAndLocationChanges() throws Exception {
         FailingDatabaseManager failing = failingManager();
         ObjectManager manager = ObjectManager.build("update_reloc", failing);
         byte[] original = "old file".getBytes();
@@ -789,10 +796,13 @@ class ObjectManagerTest {
         assertThrows(RuntimeException.class, () ->
                 manager.update(key("obj", "uB"), "b.txt", new ByteArrayInputStream("new file".getBytes())));
 
+        // The previous identity is fully intact and still the object's identity.
         assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_reloc/obj_uA.txt")));
         assertEquals("update_reloc/obj_uA.txt",
                 databaseManager.getStorageLocation("update_reloc", key("obj", "uA")));
-        assertFalse(Files.exists(tempDir.resolve("update_reloc/obj_uB.txt")));
+        // The new file was renamed into place before the upsert failed; it is an
+        // unreferenced orphan that the next successful update of this identity adopts.
+        assertTrue(Files.exists(tempDir.resolve("update_reloc/obj_uB.txt")));
     }
 
     @Test

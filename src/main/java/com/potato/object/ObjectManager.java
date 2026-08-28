@@ -254,12 +254,19 @@ public class ObjectManager {
      * Common store routine shared by {@link #put(ObjectStatement, String, InputStream)} and
      * {@link #update(ObjectStatement, String, InputStream)}.
      *
-     * <p>The operation is atomic: new content is staged in a temporary file, the
-     * metadata row is committed, and only then is the staged file renamed into place.
-     * If the metadata write fails, the temporary file is removed and any previous
-     * object is left untouched. The storage location is derived entirely from the
-     * object's identity, which is immutable, so a replacement always writes to the
-     * same location.</p>
+     * <p>The file is committed before the metadata: new content is staged in a temporary
+     * file, renamed into its final location, and only then is the metadata row persisted,
+     * so a committed row always describes a file that is actually present. If the rename
+     * fails, nothing has changed and the previous object (if any) is left untouched. If
+     * the metadata write fails after the rename, the newly written file is removed for a
+     * new identity, leaving the identity exactly as it was before; for a replacement the
+     * previous row and the new bytes transiently disagree, which in-process readers never
+     * observe (the striped lock serializes them) and the next store or removal of the
+     * identity reconciles. A crash at any point before the row commit leaves at worst an
+     * unreferenced file, which is invisible to reads and re-adopted by the next store of
+     * the same identity. The storage location is derived entirely from the object's
+     * identity, which is immutable, so a replacement always writes to the same location
+     * unless the file name's extension changes.</p>
      *
      * @param statement the statement carrying the primary key and additional key values
      * @param fileName  original file name
@@ -293,11 +300,34 @@ public class ObjectManager {
 
                 long size = counting.getByteCount();
                 String md5Hex = HexFormat.of().formatHex(md5.digest());
-                ObjectMetadata metadata = new ObjectMetadata(fileName, extractExtension(fileName), size, md5Hex,
-                        Instant.now().toString(), null, "DISK", fileLocation, 0);
-                databaseManager.upsertMetadata(namespace, statement, metadata, overwrite);
 
+                // Put the file in place first. If the rename fails, nothing has changed:
+                // the previous metadata row (if any) and its file are still consistent.
                 mainStorageManager.rename(tempLocation, fileLocation);
+
+                // Commit the metadata only after the file exists at its final location,
+                // so a committed row always describes a file that is actually present.
+                try {
+                    ObjectMetadata metadata = new ObjectMetadata(fileName, extractExtension(fileName), size, md5Hex,
+                            Instant.now().toString(), null, "DISK", fileLocation, 0);
+                    databaseManager.upsertMetadata(namespace, statement, metadata, overwrite);
+                } catch (RuntimeException e) {
+                    if (!overwrite) {
+                        // No row references this file yet; remove the orphan so the
+                        // identity is left exactly as it was before this store attempt.
+                        try {
+                            mainStorageManager.delete(fileLocation);
+                        } catch (RuntimeException cleanupFailure) {
+                            e.addSuppressed(cleanupFailure);
+                        }
+                    }
+                    // overwrite: the previous row still points at fileLocation, which now
+                    // holds the new bytes. In-process readers never observe this state
+                    // (the striped lock serializes reads and writes) and the next store
+                    // or removal of this identity reconciles it.
+                    throw e;
+                }
+
                 if (oldLocation != null && !oldLocation.equals(fileLocation)) {
                     mainStorageManager.delete(oldLocation);
                 }
