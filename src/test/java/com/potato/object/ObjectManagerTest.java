@@ -5,6 +5,7 @@ import com.potato.database.DatabaseManager;
 import com.potato.database.KeyType;
 import com.potato.storage.DiskFileManager;
 import com.potato.util.CountingInputStream;
+import com.potato.util.Namespaces;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -717,6 +718,24 @@ class ObjectManagerTest {
 
         manager.put(key("t2", "u1"), "data.bin", new ByteArrayInputStream("bytes".getBytes()));
         assertTrue(manager.checkExist(key("t2", "u1")));
+    }
+
+    @Test
+    void rejectsNamespacesThatCouldInjectSql() {
+        assertThrows(IllegalArgumentException.class,
+                () -> ObjectManager.build("x(x); DROP TABLE a; --", databaseManager));
+        assertThrows(IllegalArgumentException.class,
+                () -> ObjectManager.build("notes; DROP TABLE veil_metadata_notes; --", databaseManager));
+        assertThrows(IllegalArgumentException.class,
+                () -> Namespaces.requireValid("with space"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Namespaces.requireValid(""));
+        assertThrows(IllegalArgumentException.class,
+                () -> databaseManager.createTable("avatar; DROP TABLE veil_metadata_notes; --"));
+        // A rejected namespace must never pollute the registry.
+        assertFalse(ObjectManager.checkDuplicateNamespace("x(x); DROP TABLE a; --"));
+        // Plain identifiers remain accepted.
+        Namespaces.requireValid("notes_2024");
     }
 
     private static FailingDatabaseManager failingManager() {

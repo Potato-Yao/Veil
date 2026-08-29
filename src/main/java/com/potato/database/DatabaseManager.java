@@ -4,6 +4,7 @@ import com.potato.object.ObjectManager;
 import com.potato.object.ObjectMetadata;
 import com.potato.object.ObjectReference;
 import com.potato.object.ObjectStatement;
+import com.potato.util.Namespaces;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -96,6 +97,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @throws SQLException if the table could not be created
      */
     public void createTable(String name) throws SQLException {
+        Namespaces.requireValid(name);
         String tableName = Config.DATABASE_PREFIX + "_" + name;
         String sql = "CREATE TABLE IF NOT EXISTS " + tableName + " (" + columnDefinitions() + ")";
 
@@ -170,6 +172,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @throws IllegalArgumentException if the statement does not carry the full identity
      */
     public String getStorageLocation(String namespace, ObjectStatement statement) {
+        Namespaces.requireValid(namespace);
         requireIdentity(statement);
         List<QueryValue> params = new ArrayList<>();
         String where = String.join(" AND ", buildKeyConditions(statement, params));
@@ -196,6 +199,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @throws IllegalArgumentException if the statement does not carry the full identity
      */
     public ObjectMetadata getMetadata(String namespace, ObjectStatement statement) {
+        Namespaces.requireValid(namespace);
         requireIdentity(statement);
         List<QueryValue> params = new ArrayList<>();
         String where = String.join(" AND ", buildKeyConditions(statement, params));
@@ -235,6 +239,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @throws IllegalArgumentException if the statement does not carry the full identity
      */
     public boolean delete(String namespace, ObjectStatement statement) {
+        Namespaces.requireValid(namespace);
         requireIdentity(statement);
         List<QueryValue> params = new ArrayList<>();
         String where = String.join(" AND ", buildKeyConditions(statement, params));
@@ -264,6 +269,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @see #recordAccess(String, ObjectStatement)
      */
     public void updateAccess(String namespace, ObjectStatement statement) {
+        Namespaces.requireValid(namespace);
         requireIdentity(statement);
         List<QueryValue> params = new ArrayList<>();
         params.add(new QueryValue.StringValue(Instant.now().toString()));
@@ -292,6 +298,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @throws IllegalArgumentException if the statement does not carry the full identity
      */
     public void recordAccess(String namespace, ObjectStatement statement) {
+        Namespaces.requireValid(namespace);
         requireIdentity(statement);
         accessStatsTracker.record(new AccessStatsTracker.ObjectId(namespace, statement.key(), statement.kv()));
     }
@@ -407,6 +414,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      *                                  unknown or non-updatable column
      */
     public long executeUpdate(String namespace, ObjectStatement statement) {
+        Namespaces.requireValid(namespace);
         boolean byKey = statement.key() != null;
         statement.validateFor(byKey ? ObjectStatement.Operation.UPDATE_BY_KEY : ObjectStatement.Operation.UPDATE);
 
@@ -448,6 +456,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      *                                  references an unknown column
      */
     public long executeDelete(String namespace, ObjectStatement statement) {
+        Namespaces.requireValid(namespace);
         statement.validateFor(ObjectStatement.Operation.DELETE);
         List<QueryValue> params = new ArrayList<>();
         List<String> conditions = buildConditions(statement, params);
@@ -533,6 +542,7 @@ public abstract class DatabaseManager implements AutoCloseable {
     private void applyAccessStats(Connection connection, String namespace,
                                   List<Map.Entry<AccessStatsTracker.ObjectId, AccessStatsTracker.AccessStat>> entries)
             throws SQLException {
+        Namespaces.requireValid(namespace);
         StringBuilder sql = new StringBuilder("UPDATE ").append(Config.DATABASE_PREFIX).append("_").append(namespace)
                 .append(" SET last_accessed_at = ?, access_count = access_count + ? WHERE key = ?");
         for (String column : additionalKeyColumnNames) {
@@ -566,6 +576,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @return the SQL and its parameters
      */
     private BuiltQuery buildQuery(String namespace, ObjectStatement statement, boolean countOnly) {
+        Namespaces.requireValid(namespace);
         List<QueryValue> params = new ArrayList<>();
         List<String> conditions = buildConditions(statement, params);
 
@@ -774,6 +785,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @throws IllegalArgumentException if the statement does not carry the full identity or contains an unknown column
      */
     public void upsertMetadata(String namespace, ObjectStatement statement, ObjectMetadata metadata, boolean overwrite) {
+        Namespaces.requireValid(namespace);
         statement.validateFor(ObjectStatement.Operation.INSERT);
         requireIdentity(statement);
         for (Map.Entry<String, String> entry : statement.kv().entrySet()) {

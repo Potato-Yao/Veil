@@ -4,6 +4,7 @@ import com.potato.VeilConfiguration;
 import com.potato.database.DatabaseManager;
 import com.potato.storage.FileManager;
 import com.potato.util.CountingInputStream;
+import com.potato.util.Namespaces;
 import com.potato.util.StripedLock;
 
 import java.io.InputStream;
@@ -615,6 +616,7 @@ public class ObjectManager {
                 throw new IllegalStateException("ObjectManager requires a database manager");
             }
 
+            Namespaces.requireValid(namespace);
             validateLocation(namespace);
             if (!namespaceList.add(namespace)) {
                 throw new IllegalArgumentException("The namespace \"" + namespace + "\" is already taken");
