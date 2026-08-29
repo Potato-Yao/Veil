@@ -103,8 +103,8 @@ public class ObjectManager {
      * <p>The identity of an object is its primary key together with all additional key
      * column values and is immutable: {@code update} replaces the content and metadata
      * of the object with that identity. If no object with the given identity exists, a
-     * new object is created instead. Access statistics are preserved across the
-     * replacement.</p>
+     * new object is created instead. Access statistics and the creation time are
+     * preserved across the replacement, while the last-write time is refreshed.</p>
      *
      * @param statement the statement carrying the primary key (and additional key values)
      * @param fileName  original file name; its extension is stored as metadata
@@ -225,7 +225,8 @@ public class ObjectManager {
      * <p>The statement must carry a primary key, at least one {@code set(...)} assignment
      * and no conditions: the target object is identified by its primary key (and
      * additional keys). Only the assigned metadata columns are changed; content, access
-     * statistics, and creation time are left untouched.</p>
+     * statistics, and creation time are left untouched, while the last-write time is
+     * refreshed.</p>
      *
      * @param statement the statement carrying the primary key and the assignments to apply
      * @throws IllegalArgumentException if the statement contains an unknown key column,
@@ -309,8 +310,9 @@ public class ObjectManager {
                 // Commit the metadata only after the file exists at its final location,
                 // so a committed row always describes a file that is actually present.
                 try {
+                    String now = Instant.now().toString();
                     ObjectMetadata metadata = new ObjectMetadata(fileName, extractExtension(fileName), size, md5Hex,
-                            Instant.now().toString(), null, "DISK", fileLocation, 0);
+                            now, now, null, "DISK", fileLocation, 0);
                     databaseManager.upsertMetadata(namespace, statement, metadata, overwrite);
                 } catch (RuntimeException e) {
                     if (!overwrite) {

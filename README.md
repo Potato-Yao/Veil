@@ -196,7 +196,7 @@ single-object operation (`get`, `update`, `remove`, `checkExist`,
 key value addresses a different (possibly absent) object.
 
 The identity is immutable: `update()` replaces the content and metadata of the
-object with that identity (preserving its access statistics), or creates a new
+object with that identity (preserving its access statistics and creation time), or creates a new
 object if the identity does not exist yet. To move an object to a different key,
 remove it and store it again.
 

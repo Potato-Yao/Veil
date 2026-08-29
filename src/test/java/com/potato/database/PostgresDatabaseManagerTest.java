@@ -65,7 +65,7 @@ class PostgresDatabaseManagerTest {
 
         databaseManager.insert(NAMESPACE,
                 ObjectStatement.builder().key(key).kv("user_id", "u1").build(),
-                new ObjectMetadata("photo.png", "png", 5, "abc123", "2024-01-01T00:00:00Z",
+                new ObjectMetadata("photo.png", "png", 5, "abc123", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z",
                         null, "DISK", NAMESPACE + "/obj1_u1", 0));
 
         assertEquals(NAMESPACE + "/obj1_u1",
@@ -95,11 +95,11 @@ class PostgresDatabaseManagerTest {
 
         databaseManager.insert(NAMESPACE,
                 ObjectStatement.builder().key(key).kv("user_id", "u2").build(),
-                new ObjectMetadata("a.txt", "txt", 1, "aaa", "2024-01-01T00:00:00Z",
+                new ObjectMetadata("a.txt", "txt", 1, "aaa", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z",
                         null, "DISK", NAMESPACE + "/obj2_a", 0));
         databaseManager.upsert(NAMESPACE,
                 ObjectStatement.builder().key(key).kv("user_id", "u2").build(),
-                new ObjectMetadata("b.txt", "txt", 2, "bbb", "2024-01-02T00:00:00Z",
+                new ObjectMetadata("b.txt", "txt", 2, "bbb", "2024-01-02T00:00:00Z", "2024-01-02T00:00:00Z",
                         null, "DISK", NAMESPACE + "/obj2_b", 0));
 
         assertEquals(NAMESPACE + "/obj2_b",
@@ -124,7 +124,7 @@ class PostgresDatabaseManagerTest {
         assertThrows(IllegalArgumentException.class, () ->
                 databaseManager.insert(NAMESPACE,
                         ObjectStatement.builder().key("obj3").kv("unknown_col", "v").build(),
-                        new ObjectMetadata("a.txt", "txt", 1, "x", "2024-01-01T00:00:00Z",
+                        new ObjectMetadata("a.txt", "txt", 1, "x", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z",
                                 null, "DISK", "loc", 0)));
     }
 
@@ -154,11 +154,11 @@ class PostgresDatabaseManagerTest {
     void sameKeyWithDifferentAdditionalKeyValuesCoexist() throws Exception {
         databaseManager.insert(NAMESPACE,
                 ObjectStatement.builder().key("same").kv("user_id", "u1").build(),
-                new ObjectMetadata("a.txt", "txt", 1, "aaa", "2024-01-01T00:00:00Z",
+                new ObjectMetadata("a.txt", "txt", 1, "aaa", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z",
                         null, "DISK", NAMESPACE + "/same_u1", 0));
         databaseManager.insert(NAMESPACE,
                 ObjectStatement.builder().key("same").kv("user_id", "u2").build(),
-                new ObjectMetadata("b.txt", "txt", 2, "bbb", "2024-01-01T00:00:00Z",
+                new ObjectMetadata("b.txt", "txt", 2, "bbb", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z",
                         null, "DISK", NAMESPACE + "/same_u2", 0));
 
         assertEquals(NAMESPACE + "/same_u1",
@@ -173,7 +173,7 @@ class PostgresDatabaseManagerTest {
     void lookupRequiresMatchingAdditionalKeyValues() {
         databaseManager.insert(NAMESPACE,
                 ObjectStatement.builder().key("addr").kv("user_id", "u1").build(),
-                new ObjectMetadata("a.txt", "txt", 1, "aaa", "2024-01-01T00:00:00Z",
+                new ObjectMetadata("a.txt", "txt", 1, "aaa", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z",
                         null, "DISK", NAMESPACE + "/addr_u1", 0));
 
         assertNull(databaseManager.getStorageLocation(NAMESPACE,

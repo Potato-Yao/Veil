@@ -25,7 +25,8 @@ import java.util.Map;
  * <p>Each namespace gets a table named {@code veil_metadata_<namespace>} holding a
  * primary {@code key} column, any additional key columns (defined via
  * {@link Builder#keyColumn(String, KeyType)}), and standard metadata columns such as
- * file name, extension, size, MD5, timestamps and storage location. The primary key
+ * file name, extension, size, MD5, creation and last-write timestamps, and storage
+ * location. The primary key
  * spans the {@code key} column and every additional key column, so an object's
  * identity is the composite of all of them and is enforced as a database constraint.</p>
  *
@@ -64,6 +65,7 @@ public abstract class DatabaseManager implements AutoCloseable {
         addMetadataColumn("file_size", "BIGINT NOT NULL");
         addMetadataColumn("md5", "TEXT NOT NULL");
         addMetadataColumn("created_at", "TEXT NOT NULL");
+        addMetadataColumn("updated_at", "TEXT NOT NULL");
         addMetadataColumn("last_accessed_at", "TEXT");
         addMetadataColumn("storage_type", "TEXT NOT NULL");
         addMetadataColumn("storage_location", "TEXT NOT NULL");
@@ -151,7 +153,7 @@ public abstract class DatabaseManager implements AutoCloseable {
      * Inserts or replaces the metadata row for an object.
      *
      * <p>When a row with the same key already exists, its metadata columns are updated
-     * in place while access statistics are left untouched.</p>
+     * in place while access statistics and the creation time are left untouched.</p>
      *
      * @param namespace  the namespace the object belongs to
      * @param statement  the statement carrying the primary key and additional key values
@@ -203,7 +205,7 @@ public abstract class DatabaseManager implements AutoCloseable {
         requireIdentity(statement);
         List<QueryValue> params = new ArrayList<>();
         String where = String.join(" AND ", buildKeyConditions(statement, params));
-        String sql = "SELECT file_name, file_extension, file_size, md5, created_at, last_accessed_at,"
+        String sql = "SELECT file_name, file_extension, file_size, md5, created_at, updated_at, last_accessed_at,"
                 + " storage_type, storage_location, access_count FROM " + Config.DATABASE_PREFIX + "_" + namespace
                 + " WHERE " + where;
         try (Connection connection = getConnection();
@@ -219,6 +221,7 @@ public abstract class DatabaseManager implements AutoCloseable {
                         resultSet.getLong("file_size"),
                         resultSet.getString("md5"),
                         resultSet.getString("created_at"),
+                        resultSet.getString("updated_at"),
                         resultSet.getString("last_accessed_at"),
                         resultSet.getString("storage_type"),
                         resultSet.getString("storage_location"),
@@ -357,6 +360,7 @@ public abstract class DatabaseManager implements AutoCloseable {
                             resultSet.getLong("file_size"),
                             resultSet.getString("md5"),
                             resultSet.getString("created_at"),
+                            resultSet.getString("updated_at"),
                             resultSet.getString("last_accessed_at"),
                             resultSet.getString("storage_type"),
                             resultSet.getString("storage_location"),
@@ -420,10 +424,19 @@ public abstract class DatabaseManager implements AutoCloseable {
 
         List<QueryValue> params = new ArrayList<>();
         List<String> setClauses = new ArrayList<>();
+        boolean assignsUpdatedAt = false;
         for (ObjectStatement.Assignment assignment : statement.assignments()) {
             validateUpdateColumn(assignment.column());
             setClauses.add(assignment.column() + " = ?");
             params.add(assignment.value());
+            if (assignment.column().equals("updated_at")) {
+                assignsUpdatedAt = true;
+            }
+        }
+        if (!assignsUpdatedAt) {
+            // A metadata modification is still a modification: stamp the last-write time.
+            setClauses.add("updated_at = ?");
+            params.add(new QueryValue.StringValue(Instant.now().toString()));
         }
 
         List<String> conditions = new ArrayList<>();
@@ -775,8 +788,9 @@ public abstract class DatabaseManager implements AutoCloseable {
      * standard metadata columns. When {@code overwrite} is {@code false}, the insert
      * fails if a row with the same identity already exists. When {@code overwrite} is
      * {@code true}, the statement is appended with {@code ON CONFLICT (key, ...)} over
-     * the full identity to replace the existing row's metadata columns; key columns and
-     * access statistics are left untouched because the identity is immutable.</p>
+     * the full identity to replace the existing row's metadata columns; key columns,
+     * access statistics and the creation time are left untouched because the identity
+     * is immutable, while the last-write time is refreshed.</p>
      *
      * @param namespace  the namespace the object belongs to
      * @param statement  the statement carrying the primary key and additional key values
@@ -813,6 +827,8 @@ public abstract class DatabaseManager implements AutoCloseable {
         values.add(new QueryValue.StringValue(metadata.md5()));
         columns.add("created_at");
         values.add(new QueryValue.StringValue(metadata.createdAt()));
+        columns.add("updated_at");
+        values.add(new QueryValue.StringValue(metadata.updatedAt()));
         columns.add("storage_type");
         values.add(new QueryValue.StringValue(metadata.storageType()));
         columns.add("storage_location");
@@ -827,9 +843,15 @@ public abstract class DatabaseManager implements AutoCloseable {
                 .append(" (").append(String.join(", ", columns)).append(") VALUES (").append(placeholders).append(")");
 
         if (overwrite) {
+            String tableName = Config.DATABASE_PREFIX + "_" + namespace;
             List<String> updates = new ArrayList<>();
             for (String column : metadataColumnNames) {
                 if (column.equals("last_accessed_at") || column.equals("access_count")) {
+                    continue;
+                }
+                if (column.equals("created_at")) {
+                    // Creation time is immutable: keep the original value on replacement.
+                    updates.add(column + " = " + tableName + "." + column);
                     continue;
                 }
                 updates.add(column + " = excluded." + column);

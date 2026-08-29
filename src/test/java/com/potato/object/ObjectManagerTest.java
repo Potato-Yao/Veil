@@ -738,6 +738,41 @@ class ObjectManagerTest {
         Namespaces.requireValid("notes_2024");
     }
 
+    @Test
+    void updatePreservesCreatedAtAndRefreshesUpdatedAt() throws Exception {
+        ObjectManager manager = ObjectManager.build("created_updated", databaseManager);
+        ObjectStatement key = key("obj", "u1");
+        manager.update(key, "a.txt", new ByteArrayInputStream("v1".getBytes()));
+        var first = databaseManager.getMetadata("created_updated", key);
+        assertNotNull(first.updatedAt());
+        assertEquals(first.createdAt(), first.updatedAt(), "a fresh store stamps both timestamps");
+
+        Thread.sleep(100);
+        manager.update(key, "b.txt", new ByteArrayInputStream("v2".getBytes()));
+        var second = databaseManager.getMetadata("created_updated", key);
+        assertEquals(first.createdAt(), second.createdAt(), "creation time must survive an update");
+        assertTrue(second.updatedAt().compareTo(first.updatedAt()) > 0,
+                "an update must refresh the last-write time");
+    }
+
+    @Test
+    void updateMetadataRefreshesUpdatedAtWithoutTouchingContent() throws Exception {
+        ObjectManager manager = ObjectManager.build("meta_updated", databaseManager);
+        ObjectStatement key = key("obj", "u1");
+        manager.update(key, "a.txt", new ByteArrayInputStream("data".getBytes()));
+        var before = databaseManager.getMetadata("meta_updated", key);
+
+        Thread.sleep(100);
+        manager.updateMetadata(ObjectStatement.builder().key(key.key()).kv(key.kv())
+                .set("file_name", "renamed.txt").build());
+
+        var after = databaseManager.getMetadata("meta_updated", key);
+        assertEquals("renamed.txt", after.fileName());
+        assertEquals(before.createdAt(), after.createdAt());
+        assertTrue(after.updatedAt().compareTo(before.updatedAt()) > 0,
+                "a metadata update must refresh the last-write time");
+    }
+
     private static FailingDatabaseManager failingManager() {
         HashMap<String, KeyType> keyColumns = new HashMap<>();
         keyColumns.put("user_id", KeyType.TEXT);
