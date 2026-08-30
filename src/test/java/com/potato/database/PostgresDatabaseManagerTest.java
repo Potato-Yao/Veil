@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -138,16 +139,15 @@ class PostgresDatabaseManagerTest {
     void objectManagerStoresFileAndMetadataEndToEnd() throws Exception {
         byte[] data = "hello pg".getBytes();
         String key = "user123";
+        ObjectStatement statement = ObjectStatement.builder().key(key).kv("user_id", "u1").build();
 
-        objectManager.update(ObjectStatement.builder().key(key).kv("user_id", "u1").build(),
-                "avatar.png", new ByteArrayInputStream(data));
+        objectManager.update(statement, "avatar.png", new ByteArrayInputStream(data));
 
-        Path stored = tempDir.resolve(NAMESPACE + "/user123_u1.png");
+        String location = databaseManager.getStorageLocation(NAMESPACE, statement);
+        assertNotNull(location);
+        Path stored = tempDir.resolve(location);
         assertTrue(Files.exists(stored));
         assertArrayEquals(data, Files.readAllBytes(stored));
-        assertEquals(NAMESPACE + "/user123_u1.png",
-                databaseManager.getStorageLocation(NAMESPACE,
-                        ObjectStatement.builder().key(key).kv("user_id", "u1").build()));
     }
 
     @Test

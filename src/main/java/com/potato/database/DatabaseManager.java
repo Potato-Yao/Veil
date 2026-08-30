@@ -18,6 +18,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Abstract persistence layer for object metadata.
@@ -117,6 +118,7 @@ public abstract class DatabaseManager implements AutoCloseable {
     private String columnDefinitions() {
         List<String> columns = new ArrayList<>(keyColumns);
         columns.addAll(metadataColumns);
+        columns.add("object_id TEXT NOT NULL UNIQUE");
         List<String> primaryKey = new ArrayList<>();
         primaryKey.add("key");
         primaryKey.addAll(additionalKeyColumnNames);
@@ -174,17 +176,39 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @throws IllegalArgumentException if the statement does not carry the full identity
      */
     public String getStorageLocation(String namespace, ObjectStatement statement) {
+        ObjectRecord record = getObjectRecord(namespace, statement);
+        return record == null ? null : record.storageLocation();
+    }
+
+    /**
+     * Returns the object record of the object with the given identity.
+     *
+     * <p>The record carries the object's opaque {@code object_id} (stable for the
+     * lifetime of the object and unrelated to the identity's key values) and its
+     * current {@code storage_location}. Physical paths are derived from the opaque
+     * {@code object_id}, never from the user-supplied key values, so no two distinct
+     * identities can share a storage location.</p>
+     *
+     * @param namespace  the namespace of the object
+     * @param statement  the statement carrying the full identity (primary key and
+     *                   additional key values)
+     * @return the object's record, or {@code null} if no such object exists
+     * @throws IllegalArgumentException if the statement does not carry the full identity
+     */
+    public ObjectRecord getObjectRecord(String namespace, ObjectStatement statement) {
         Namespaces.requireValid(namespace);
         requireIdentity(statement);
         List<QueryValue> params = new ArrayList<>();
         String where = String.join(" AND ", buildKeyConditions(statement, params));
-        String sql = "SELECT storage_location FROM " + Config.DATABASE_PREFIX + "_" + namespace
+        String sql = "SELECT object_id, storage_location FROM " + Config.DATABASE_PREFIX + "_" + namespace
                 + " WHERE " + where;
         try (Connection connection = getConnection();
              PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
             bindParameters(preparedStatement, params);
             try (ResultSet resultSet = preparedStatement.executeQuery()) {
-                return resultSet.next() ? resultSet.getString("storage_location") : null;
+                return resultSet.next()
+                        ? new ObjectRecord(resultSet.getString("object_id"), resultSet.getString("storage_location"))
+                        : null;
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -782,6 +806,15 @@ public abstract class DatabaseManager implements AutoCloseable {
     }
 
     /**
+     * A database row's identity and storage facts.
+     *
+     * @param objectId         the opaque, stable object identifier
+     * @param storageLocation  the physical storage location of the object's bytes
+     */
+    public record ObjectRecord(String objectId, String storageLocation) {
+    }
+
+    /**
      * Persists the metadata row of an object, inserting it or replacing an existing row.
      *
      * <p>Dynamically assembles the column list from the additional key columns and the
@@ -799,6 +832,30 @@ public abstract class DatabaseManager implements AutoCloseable {
      * @throws IllegalArgumentException if the statement does not carry the full identity or contains an unknown column
      */
     public void upsertMetadata(String namespace, ObjectStatement statement, ObjectMetadata metadata, boolean overwrite) {
+        upsertMetadata(namespace, statement, UUID.randomUUID().toString(), metadata, overwrite);
+    }
+
+    /**
+     * Persists the metadata row of an object, inserting it or replacing an existing row.
+     *
+     * <p>Dynamically assembles the column list from the additional key columns and the
+     * standard metadata columns plus the object's opaque {@code object_id}. When
+     * {@code overwrite} is {@code false}, the insert fails if a row with the same
+     * identity already exists. When {@code overwrite} is {@code true}, the statement is
+     * appended with {@code ON CONFLICT (key, ...)} over the full identity to replace the
+     * existing row's metadata columns; key columns, the {@code object_id}, access
+     * statistics and the creation time are left untouched because the identity and the
+     * object identifier are immutable, while the last-write time is refreshed.</p>
+     *
+     * @param namespace  the namespace the object belongs to
+     * @param statement  the statement carrying the primary key and additional key values
+     * @param objectId   the opaque, stable identifier of the object
+     * @param metadata   the metadata of the object to persist
+     * @param overwrite  whether to replace an existing row with the same identity
+     * @throws IllegalArgumentException if the statement does not carry the full identity or contains an unknown column
+     */
+    public void upsertMetadata(String namespace, ObjectStatement statement, String objectId,
+                               ObjectMetadata metadata, boolean overwrite) {
         Namespaces.requireValid(namespace);
         statement.validateFor(ObjectStatement.Operation.INSERT);
         requireIdentity(statement);
@@ -816,6 +873,8 @@ public abstract class DatabaseManager implements AutoCloseable {
             columns.add(column);
             values.add(keyValue(column, statement.kv().get(column)));
         }
+        columns.add("object_id");
+        values.add(new QueryValue.StringValue(objectId));
 
         columns.add("file_name");
         values.add(new QueryValue.StringValue(metadata.fileName()));

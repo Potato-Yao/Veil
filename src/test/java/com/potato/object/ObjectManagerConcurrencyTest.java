@@ -117,14 +117,13 @@ class ObjectManagerConcurrencyTest {
         }
 
         ObjectMetadata metadata = databaseManager.getMetadata("objects", key(primaryKey, "u1"));
-        Path stored = tempDir.resolve("objects/" + primaryKey + "_u1.bin");
+        Path stored = tempDir.resolve(metadata.storageLocation());
         assertTrue(Files.exists(stored));
         byte[] bytes = Files.readAllBytes(stored);
 
         long expectedSize = bytes.length;
         assertEquals(expectedSize, metadata.fileSize(), "metadata size must match file bytes");
         assertEquals(HexFormat.of().formatHex(md5(bytes)), metadata.md5(), "metadata md5 must match file bytes");
-        assertEquals("objects/" + primaryKey + "_u1.bin", metadata.storageLocation());
     }
 
     @Test
@@ -269,12 +268,12 @@ class ObjectManagerConcurrencyTest {
             executor.shutdownNow();
         }
 
-        Path stored = tempDir.resolve("objects/" + primaryKey + "_u1.bin");
-        boolean exists = Files.exists(stored);
-        boolean inDb = databaseManager.getMetadata("objects", key(primaryKey, "u1")) != null;
+        ObjectMetadata metadata = databaseManager.getMetadata("objects", key(primaryKey, "u1"));
+        boolean inDb = metadata != null;
+        boolean exists = inDb && Files.exists(tempDir.resolve(metadata.storageLocation()));
         assertEquals(exists, inDb, "file and metadata must agree after concurrent put/remove");
         if (exists) {
-            assertFalse(Files.readAllBytes(stored).length == 0);
+            assertFalse(Files.readAllBytes(tempDir.resolve(metadata.storageLocation())).length == 0);
         }
     }
 

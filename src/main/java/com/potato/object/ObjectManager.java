@@ -8,6 +8,7 @@ import com.potato.util.Namespaces;
 import com.potato.util.StripedLock;
 
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -132,8 +133,8 @@ public class ObjectManager {
      */
     public ObjectData get(ObjectStatement statement) {
         validateKv(statement.kv());
-        String location = buildLocation(statement.key(), statement.kv());
-        keyedLock.lock(location);
+        String lockKey = buildLockKey(statement.key(), statement.kv());
+        keyedLock.lock(lockKey);
         try {
             ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement);
             if (metadata == null) {
@@ -143,7 +144,7 @@ public class ObjectManager {
             InputStream stream = mainStorageManager.read(metadata.storageLocation());
             return new ObjectData(metadata, stream);
         } finally {
-            keyedLock.unlock(location);
+            keyedLock.unlock(lockKey);
         }
     }
 
@@ -160,19 +161,20 @@ public class ObjectManager {
      */
     public boolean remove(ObjectStatement statement) {
         validateKv(statement.kv());
-        String location = buildLocation(statement.key(), statement.kv());
-        keyedLock.lock(location);
+        String lockKey = buildLockKey(statement.key(), statement.kv());
+        keyedLock.lock(lockKey);
         try {
             ObjectMetadata metadata = databaseManager.getMetadata(namespace, statement);
             if (metadata == null) {
                 throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
             }
+            DatabaseManager.ObjectRecord record = databaseManager.getObjectRecord(namespace, statement);
             databaseManager.delete(namespace, statement);
             try {
                 mainStorageManager.delete(metadata.storageLocation());
             } catch (RuntimeException e) {
                 try {
-                    databaseManager.upsertMetadata(namespace, keyStatement(statement), metadata, false);
+                    databaseManager.upsertMetadata(namespace, keyStatement(statement), record.objectId(), metadata, false);
                 } catch (RuntimeException restoreFailure) {
                     e.addSuppressed(restoreFailure);
                 }
@@ -180,7 +182,7 @@ public class ObjectManager {
             }
             return true;
         } finally {
-            keyedLock.unlock(location);
+            keyedLock.unlock(lockKey);
         }
     }
 
@@ -235,15 +237,15 @@ public class ObjectManager {
      */
     public void updateMetadata(ObjectStatement statement) {
         validateKv(statement.kv());
-        String location = buildLocation(statement.key(), statement.kv());
-        keyedLock.lock(location);
+        String lockKey = buildLockKey(statement.key(), statement.kv());
+        keyedLock.lock(lockKey);
         try {
             if (databaseManager.getStorageLocation(namespace, statement) == null) {
                 throw new IllegalArgumentException("Object \"" + statement.key() + "\" does not exist in namespace \"" + namespace + "\"");
             }
             databaseManager.executeUpdate(namespace, statement);
         } finally {
-            keyedLock.unlock(location);
+            keyedLock.unlock(lockKey);
         }
     }
 
@@ -266,9 +268,10 @@ public class ObjectManager {
      * observe (the striped lock serializes them) and the next store or removal of the
      * identity reconciles. A crash at any point before the row commit leaves at worst an
      * unreferenced file, which is invisible to reads and re-adopted by the next store of
-     * the same identity. The storage location is derived entirely from the object's
-     * identity, which is immutable, so a replacement always writes to the same location
-     * unless the file name's extension changes.</p>
+     * the same identity. The storage location is derived from the object's opaque,
+     * immutable {@code object_id} — never from the user-supplied key values — so distinct
+     * identities always have distinct physical files and a replacement only changes the
+     * physical location when the file name's extension changes.</p>
      *
      * @param statement the statement carrying the primary key and additional key values
      * @param fileName  original file name
@@ -281,16 +284,17 @@ public class ObjectManager {
         Map<String, String> kv = statement.kv();
         validateKv(kv);
         validateExtension(fileName);
-        String location = buildLocation(primaryKey, kv);
-        String fileLocation = buildFileLocation(location, fileName);
-        validateLocation(fileLocation);
+        String lockKey = buildLockKey(primaryKey, kv);
 
-        keyedLock.lock(location);
+        keyedLock.lock(lockKey);
         try {
-            if (!overwrite && databaseManager.getStorageLocation(namespace, statement) != null) {
+            DatabaseManager.ObjectRecord existing = databaseManager.getObjectRecord(namespace, statement);
+            if (!overwrite && existing != null) {
                 throw new IllegalArgumentException("Object \"" + primaryKey + "\" already exists in namespace \"" + namespace + "\"");
             }
-            String oldLocation = overwrite ? databaseManager.getStorageLocation(namespace, statement) : null;
+            String objectId = existing == null ? UUID.randomUUID().toString() : existing.objectId();
+            String fileLocation = buildFileLocation(buildStoragePath(namespace, objectId), fileName);
+            validateLocation(fileLocation);
 
             String tempLocation = fileLocation + ".tmp-" + UUID.randomUUID();
             try {
@@ -313,7 +317,7 @@ public class ObjectManager {
                     String now = Instant.now().toString();
                     ObjectMetadata metadata = new ObjectMetadata(fileName, extractExtension(fileName), size, md5Hex,
                             now, now, null, "DISK", fileLocation, 0);
-                    databaseManager.upsertMetadata(namespace, statement, metadata, overwrite);
+                    databaseManager.upsertMetadata(namespace, statement, objectId, metadata, overwrite);
                 } catch (RuntimeException e) {
                     if (!overwrite) {
                         // No row references this file yet; remove the orphan so the
@@ -331,8 +335,8 @@ public class ObjectManager {
                     throw e;
                 }
 
-                if (oldLocation != null && !oldLocation.equals(fileLocation)) {
-                    mainStorageManager.delete(oldLocation);
+                if (existing != null && !existing.storageLocation().equals(fileLocation)) {
+                    mainStorageManager.delete(existing.storageLocation());
                 }
             } catch (NoSuchAlgorithmException e) {
                 throw new RuntimeException(e);
@@ -341,7 +345,7 @@ public class ObjectManager {
                 throw e;
             }
         } finally {
-            keyedLock.unlock(location);
+            keyedLock.unlock(lockKey);
         }
     }
 
@@ -397,17 +401,20 @@ public class ObjectManager {
     }
 
     /**
-     * Builds the storage location for an object as {@code namespace/<key>} where
+     * Builds the striped-lock key for an object as {@code namespace/<key>} where
      * {@code <key>} is the primary key followed by {@code _value} for each provided
      * additional key column, in the order the columns are defined in the database.
-     * The file name's extension is appended at store time, so an object stored as
-     * {@code photo.png} lands at {@code namespace/<key>_<value>.png}.</p>
+     *
+     * <p>The lock key is purely a JVM-internal serialization key: it is validated against
+     * the path rules to reject unsafe identity values, but it is never used as a
+     * filesystem path. Physical locations are derived from the object's opaque
+     * {@code object_id} instead, so user-supplied key values cannot collide on storage.</p>
      *
      * @param primaryKey the primary key of the object
      * @param kv         the additional key values, or {@code null}
-     * @return the storage location relative to the file manager root
+     * @return the lock key for the object's identity
      */
-    private String buildLocation(String primaryKey, Map<String, String> kv) {
+    private String buildLockKey(String primaryKey, Map<String, String> kv) {
         if (primaryKey == null || primaryKey.isEmpty()) {
             throw new IllegalArgumentException("Statement must carry a key");
         }
@@ -422,6 +429,33 @@ public class ObjectManager {
         String location = namespace + "/" + name;
         validateLocation(location);
         return location;
+    }
+
+    /**
+     * Builds the physical storage location for an object as
+     * {@code namespace/<h1>/<h2>/<objectId>} where {@code <h1>} and {@code <h2>} are the
+     * first two hex pairs of the SHA-256 digest of the opaque {@code objectId},
+     * spreading objects across {@code 256 * 256} directories so each directory holds a
+     * bounded number of entries. The location never contains any user-supplied value:
+     * keys, additional key values and file names cannot influence where an object is
+     * stored.
+     *
+     * @param namespace  the namespace of the object
+     * @param objectId   the opaque, stable identifier of the object
+     * @return the storage location relative to the file manager root
+     */
+    private static String buildStoragePath(String namespace, String objectId) {
+        String hash = sha256Hex(objectId);
+        return namespace + "/" + hash.substring(0, 2) + "/" + hash.substring(2, 4) + "/" + objectId;
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /**

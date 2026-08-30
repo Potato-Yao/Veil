@@ -41,11 +41,12 @@ public class ExampleMain {
                 .textMode(true)
                 .build();
 
-        // 4. Store objects; each file lands at ./avatar/<key>_<user_id>.<extension>
-        //    (e.g. ./avatar/user456_u1.png) and a metadata
-        //    row is inserted into the veil_metadata_avatar table. A statement carries
-        //    the primary key and any additional key values. The sample image is the
-        //    test fixture at src/test/resources/a.png.
+        // 4. Store objects; each file lands under ./avatar/<h1>/<h2>/<objectId>.<extension>
+        //    (e.g. ./avatar/7a/31/fb7a3110-...-1234.png), where h1/h2 are a hash-based
+        //    fan-out and the objectId is an opaque UUID that never comes from the key. A
+        //    metadata row is inserted into the veil_metadata_avatar table. A statement
+        //    carries the primary key and any additional key values. The sample image is
+        //    the test fixture at src/test/resources/a.png.
         byte[] avatarBytes = readImage();
         ObjectStatement avatar = ObjectStatement.builder().key("user123").kv("user_id", "u1").build();
         avatarManager.update(avatar, "avatar.png", new ByteArrayInputStream(avatarBytes));

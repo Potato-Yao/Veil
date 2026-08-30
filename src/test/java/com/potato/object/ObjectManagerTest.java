@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -27,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -89,7 +91,10 @@ class ObjectManagerTest {
 
         objectManager.put(key(primaryKey, "u7"), fileName, new ByteArrayInputStream(data));
 
-        Path stored = tempDir.resolve("objects/obj1_u7.png");
+        ObjectMetadata metadata = databaseManager.getMetadata("objects", key(primaryKey, "u7"));
+        assertNotNull(metadata);
+        assertOpaqueLayout(metadata.storageLocation(), "png");
+        Path stored = tempDir.resolve(metadata.storageLocation());
         assertTrue(Files.exists(stored));
         assertArrayEquals(data, Files.readAllBytes(stored));
 
@@ -107,7 +112,7 @@ class ObjectManagerTest {
             assertEquals(data.length, resultSet.getLong("file_size"));
             assertEquals(md5Hex, resultSet.getString("md5"));
             assertEquals("DISK", resultSet.getString("storage_type"));
-            assertEquals("objects/obj1_u7.png", resultSet.getString("storage_location"));
+            assertEquals(metadata.storageLocation(), resultSet.getString("storage_location"));
             assertFalse(resultSet.next());
         }
     }
@@ -124,13 +129,13 @@ class ObjectManagerTest {
 
         objectManager.put(key(primaryKey, "u1"), fileName, new ByteArrayInputStream(data));
 
-        Path stored = tempDir.resolve("objects/pic_u1.png");
+        ObjectMetadata metadata = databaseManager.getMetadata("objects", key(primaryKey, "u1"));
+        assertOpaqueLayout(metadata.storageLocation(), "png");
+        Path stored = tempDir.resolve(metadata.storageLocation());
         assertTrue(Files.exists(stored));
         assertArrayEquals(data, Files.readAllBytes(stored));
 
-        ObjectMetadata metadata = databaseManager.getMetadata("objects", key(primaryKey, "u1"));
         assertEquals("png", metadata.fileExtension());
-        assertEquals("objects/pic_u1.png", metadata.storageLocation());
         assertEquals(data.length, metadata.fileSize());
     }
 
@@ -151,7 +156,8 @@ class ObjectManagerTest {
         objectManager.put(key(primaryKey, "u3"), fileName, new ByteArrayInputStream(first));
         objectManager.update(key(primaryKey, "u3"), fileName, new ByteArrayInputStream(second));
 
-        Path stored = tempDir.resolve("objects/obj3_u3.txt");
+        ObjectMetadata metadata = databaseManager.getMetadata("objects", key(primaryKey, "u3"));
+        Path stored = tempDir.resolve(metadata.storageLocation());
         assertArrayEquals(second, Files.readAllBytes(stored));
         assertEquals(second.length, Files.size(stored));
 
@@ -179,8 +185,12 @@ class ObjectManagerTest {
         objectManager.put(key(primaryKey, "u4"), fileName, new ByteArrayInputStream(first));
         objectManager.update(key(primaryKey, "u4b"), fileName, new ByteArrayInputStream(second));
 
-        assertArrayEquals(first, Files.readAllBytes(tempDir.resolve("objects/obj4_u4.txt")));
-        assertArrayEquals(second, Files.readAllBytes(tempDir.resolve("objects/obj4_u4b.txt")));
+        ObjectMetadata firstMetadata = databaseManager.getMetadata("objects", key(primaryKey, "u4"));
+        ObjectMetadata secondMetadata = databaseManager.getMetadata("objects", key(primaryKey, "u4b"));
+        assertNotEquals(firstMetadata.storageLocation(), secondMetadata.storageLocation(),
+                "distinct identities must have distinct physical files");
+        assertArrayEquals(first, Files.readAllBytes(tempDir.resolve(firstMetadata.storageLocation())));
+        assertArrayEquals(second, Files.readAllBytes(tempDir.resolve(secondMetadata.storageLocation())));
         assertTrue(objectManager.checkExist(key(primaryKey, "u4")));
         assertTrue(objectManager.checkExist(key(primaryKey, "u4b")));
     }
@@ -198,7 +208,8 @@ class ObjectManagerTest {
             assertEquals("txt", object.metadata().fileExtension());
             assertEquals(data.length, object.metadata().fileSize());
             assertEquals("DISK", object.metadata().storageType());
-            assertEquals("objects/obj5_u5.txt", object.metadata().storageLocation());
+            assertOpaqueLayout(object.metadata().storageLocation(), "txt");
+            assertTrue(Files.exists(tempDir.resolve(object.metadata().storageLocation())));
             assertArrayEquals(data, object.stream().readAllBytes());
         }
     }
@@ -216,10 +227,12 @@ class ObjectManagerTest {
         String fileName = "bye.txt";
 
         objectManager.put(key(primaryKey, "u6"), fileName, new ByteArrayInputStream(data));
-        assertTrue(Files.exists(tempDir.resolve("objects/obj6_u6.txt")));
+        ObjectMetadata metadata = databaseManager.getMetadata("objects", key(primaryKey, "u6"));
+        Path stored = tempDir.resolve(metadata.storageLocation());
+        assertTrue(Files.exists(stored));
 
         assertTrue(objectManager.remove(key(primaryKey, "u6")));
-        assertFalse(Files.exists(tempDir.resolve("objects/obj6_u6.txt")));
+        assertFalse(Files.exists(stored));
 
         try (var connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
@@ -399,7 +412,7 @@ class ObjectManagerTest {
         assertEquals("renamed.png", afterName.fileName());
         assertEquals("png", afterName.fileExtension());
         assertEquals(data.length, afterName.fileSize());
-        assertEquals("meta/meta1_uM.png", afterName.storageLocation());
+        assertOpaqueLayout(afterName.storageLocation(), "png");
         assertEquals(0, afterName.accessCount());
 
         metaManager.updateMetadata(ObjectStatement.builder().key(primaryKey).kv("user_id", "uM")
@@ -533,13 +546,43 @@ class ObjectManagerTest {
 
         assertTrue(manager.checkExist(key("shared", "u1")));
         assertTrue(manager.checkExist(key("shared", "u2")));
-        assertEquals("identity/shared_u1.png",
-                databaseManager.getStorageLocation("identity", key("shared", "u1")));
-        assertEquals("identity/shared_u2.png",
-                databaseManager.getStorageLocation("identity", key("shared", "u2")));
-        assertTrue(Files.exists(tempDir.resolve("identity/shared_u1.png")));
-        assertTrue(Files.exists(tempDir.resolve("identity/shared_u2.png")));
+        String locationOne = databaseManager.getStorageLocation("identity", key("shared", "u1"));
+        String locationTwo = databaseManager.getStorageLocation("identity", key("shared", "u2"));
+        assertOpaqueLayout(locationOne, "png");
+        assertOpaqueLayout(locationTwo, "png");
+        assertNotEquals(locationOne, locationTwo, "different additional key values must not share a physical file");
+        assertTrue(Files.exists(tempDir.resolve(locationOne)));
+        assertTrue(Files.exists(tempDir.resolve(locationTwo)));
         assertEquals(2, databaseManager.count("identity", ObjectStatement.builder().build()));
+    }
+
+    @Test
+    void identitiesWithUnderscoresNeverSharePhysicalFiles() throws Exception {
+        ObjectManager manager = ObjectManager.build("underscore_identity", databaseManager);
+        byte[] first = "object A".getBytes();
+        byte[] second = "object B".getBytes();
+
+        // The old underscore-composed layout mapped both of these to "underscore_identity/a_b_c".
+        manager.put(ObjectStatement.builder().key("a_b").kv("user_id", "c").build(), "x.txt",
+                new ByteArrayInputStream(first));
+        manager.put(ObjectStatement.builder().key("a").kv("user_id", "b_c").build(), "x.txt",
+                new ByteArrayInputStream(second));
+
+        ObjectStatement identityA = ObjectStatement.builder().key("a_b").kv("user_id", "c").build();
+        ObjectStatement identityB = ObjectStatement.builder().key("a").kv("user_id", "b_c").build();
+        assertNotEquals(databaseManager.getStorageLocation("underscore_identity", identityA),
+                databaseManager.getStorageLocation("underscore_identity", identityB),
+                "distinct identities must not share a physical file");
+        assertOpaqueLayout(databaseManager.getStorageLocation("underscore_identity", identityA), "txt");
+        assertOpaqueLayout(databaseManager.getStorageLocation("underscore_identity", identityB), "txt");
+
+        try (ObjectData objectA = manager.get(identityA)) {
+            assertArrayEquals(first, objectA.stream().readAllBytes());
+        }
+        try (ObjectData objectB = manager.get(identityB)) {
+            assertArrayEquals(second, objectB.stream().readAllBytes());
+        }
+        assertEquals(2, databaseManager.count("underscore_identity", ObjectStatement.builder().build()));
     }
 
     @Test
@@ -583,8 +626,7 @@ class ObjectManagerTest {
         try (ObjectData object = manager.get(tenant)) {
             assertArrayEquals("data".getBytes(), object.stream().readAllBytes());
         }
-        assertEquals("long_key/doc1_7.txt",
-                longDb.getStorageLocation("long_key", tenant));
+        assertOpaqueLayout(longDb.getStorageLocation("long_key", tenant), "txt");
 
         ObjectStatement otherTenant = ObjectStatement.builder().key("doc1").kv("tenant_id", "8").build();
         assertFalse(manager.checkExist(otherTenant));
@@ -789,6 +831,18 @@ class ObjectManagerTest {
         }
     }
 
+    /**
+     * Asserts that a storage location follows the opaque hash-fan-out layout
+     * {@code <namespace>/<h1>/<h2>/<uuid>.<ext>} and is therefore never derived from
+     * user-supplied key values.
+     */
+    private static void assertOpaqueLayout(String location, String extension) {
+        String uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+        String ext = extension == null || extension.isEmpty() ? "" : "\\." + extension;
+        String pattern = "^[A-Za-z0-9_]+/[0-9a-f]{2}/[0-9a-f]{2}/" + uuid + ext + "$";
+        assertTrue(location != null && location.matches(pattern), "expected opaque layout, got: " + location);
+    }
+
     @Test
     void putRemovesTempFileWhenInsertFails() throws Exception {
         FailingDatabaseManager failing = failingManager();
@@ -812,7 +866,8 @@ class ObjectManagerTest {
         assertThrows(IllegalArgumentException.class, () ->
                 manager.put(key("obj", "u1"), "b.txt", new ByteArrayInputStream("clobber".getBytes())));
 
-        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("put_dup/obj_u1.txt")));
+        ObjectMetadata metadata = databaseManager.getMetadata("put_dup", key("obj", "u1"));
+        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve(metadata.storageLocation())));
         assertEquals(1, tempFilesUnder("put_dup").size());
     }
 
@@ -835,7 +890,7 @@ class ObjectManagerTest {
         // bytes transiently disagree with the old row until the next successful update
         // or removal of this identity reconciles them. No temp file is left behind.
         assertEquals("new version".getBytes().length,
-                Files.readAllBytes(tempDir.resolve("update_fail/obj_u1.txt")).length);
+                Files.readAllBytes(tempDir.resolve(metadata.storageLocation())).length);
         assertEquals(1, tempFilesUnder("update_fail").size());
     }
 
@@ -851,12 +906,16 @@ class ObjectManagerTest {
                 manager.update(key("obj", "uB"), "b.txt", new ByteArrayInputStream("new file".getBytes())));
 
         // The previous identity is fully intact and still the object's identity.
-        assertArrayEquals(original, Files.readAllBytes(tempDir.resolve("update_reloc/obj_uA.txt")));
-        assertEquals("update_reloc/obj_uA.txt",
-                databaseManager.getStorageLocation("update_reloc", key("obj", "uA")));
+        ObjectMetadata metadataA = databaseManager.getMetadata("update_reloc", key("obj", "uA"));
+        Path originalPath = tempDir.resolve(metadataA.storageLocation());
+        assertArrayEquals(original, Files.readAllBytes(originalPath));
+
         // The new file was renamed into place before the upsert failed; it is an
         // unreferenced orphan that the next successful update of this identity adopts.
-        assertTrue(Files.exists(tempDir.resolve("update_reloc/obj_uB.txt")));
+        List<Path> files = tempFilesUnder("update_reloc");
+        assertEquals(2, files.size(), "original file plus one unreferenced orphan");
+        Path orphan = files.stream().filter(path -> !path.equals(originalPath)).findFirst().orElseThrow();
+        assertArrayEquals("new file".getBytes(), Files.readAllBytes(orphan));
     }
 
     @Test
@@ -869,8 +928,9 @@ class ObjectManagerTest {
 
         assertThrows(RuntimeException.class, () -> manager.remove(key("obj", "u1")));
 
-        assertArrayEquals(data, Files.readAllBytes(tempDir.resolve("remove_fail/obj_u1.txt")));
-        assertNotNull(databaseManager.getMetadata("remove_fail", key("obj", "u1")));
+        ObjectMetadata metadata = databaseManager.getMetadata("remove_fail", key("obj", "u1"));
+        assertNotNull(metadata);
+        assertArrayEquals(data, Files.readAllBytes(tempDir.resolve(metadata.storageLocation())));
     }
 
     /**
@@ -895,9 +955,10 @@ class ObjectManagerTest {
         }
 
         @Override
-        public void upsertMetadata(String namespace, ObjectStatement statement, ObjectMetadata metadata, boolean overwrite) {
+        public void upsertMetadata(String namespace, ObjectStatement statement, String objectId,
+                                   ObjectMetadata metadata, boolean overwrite) {
             failIf(overwrite ? "upsert" : "insert");
-            super.upsertMetadata(namespace, statement, metadata, overwrite);
+            super.upsertMetadata(namespace, statement, objectId, metadata, overwrite);
         }
 
         @Override
