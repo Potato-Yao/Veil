@@ -1,206 +1,121 @@
-Assuming one JVM, high concurrency, and millions or more files, Veil can remain a library rather than become a distributed service. However, it still needs major changes for concurrency, storage layout, metadata scalability, and crash recovery.
-Revised Assessment
-The main target should be:
-Application threads
-|
-Bounded Veil API
-|
-Metadata database + local/remote byte storage
-|
-Background cleanup, archive, statistics, and reconciliation workers
-One JVM simplifies coordination, but it does not eliminate:
-- Concurrent operations on the same object
-- Database connection exhaustion
-- Disk I/O saturation
-- Process crashes between database and filesystem operations
-- Filesystem directory limits
-- Large-query memory usage
-- Metadata indexing and migration problems
-  Critical Problems
-1. Object identity remains broken
-- The database primary key is only key: DatabaseManager.java:43.
-- Additional keys affect the file path but not lookup, deletion, or uniqueness.
-- Operations filter only by key: DatabaseManager.java:173-253.
-- Define one immutable identity, preferably (namespace, key) or (namespace, key, additional_keys) with an actual unique constraint.
-2. Concurrent updates can produce mismatched bytes and metadata
-- Metadata is committed before final file rename: ObjectManager.java:284-295.
-- Two threads updating the same key can interleave database upserts and file renames.
-- The resulting file may come from request B while metadata contains request A’s size and checksum.
-- One JVM allows keyed locking, but persistent lifecycle state is still needed for crash recovery.
-3. removeAll() is incorrect and unscalable
-- It loads matching rows into a list: ObjectManager.java:223-225.
-- The query honors pagination, while deletion ignores it.
-- It can delete more metadata rows than physical files and create orphans.
-- Process deletions in bounded cursor-based batches.
-4. Filesystem containment is incomplete
-- DiskFileManager.resolve() only normalizes: DiskFileManager.java:148-150.
-- It must reject absolute paths, verify the resolved path starts with the root, and account for symbolic links.
-5. Metadata can be corrupted through updates
-- updateMetadata() permits changing checksum, size, storage location, timestamps, and storage type.
-- Only user-editable fields should be exposed.
-  Concurrency Design
-  For the same object, operations must be serialized or version-checked.
-  A practical one-JVM design is:
-- Use striped or keyed locks around object mutation.
-- Keep reads mostly lock-free.
-- Add a version or generation number to every metadata row.
-- Perform updates with optimistic locking:
-  UPDATE objects
-  SET version = version + 1, ...
-  WHERE object_id = ? AND version = ?
-- Return a conflict if another update won.
-- Do not hold one global lock.
-- Keep lock entries bounded so millions of object keys do not create millions of permanent lock objects.
-  Keyed JVM locks prevent same-process races, while database versions detect programming mistakes and support recovery after restart.
-  Crash-Safe Write Flow
-  A database and filesystem cannot participate in a simple atomic transaction. Model the operation explicitly:
-1. Generate an opaque object ID and temporary storage key.
-2. Insert metadata with UPLOADING status.
-3. Stream data into a temporary file while calculating size and SHA-256.
-4. Flush and close the file.
-5. Move it to an immutable versioned location.
-6. Update metadata to READY with the final location and checksum.
-7. Asynchronously remove the previous version.
-8. Reconciliation workers clean old UPLOADING, DELETING, and orphaned files.
-   Never overwrite the active file in place. Immutable physical versions make concurrent reads safe.
-   Storage Layout
-   The current path format places files directly under a namespace:
-   namespace/key_additionalKey
-   That is unsuitable for very large namespaces. Large directories make traversal, backup, cleanup, and some filesystem operations expensive.
-   Use opaque IDs with hash-based fan-out:
-   objects/7a/31/7a31.../version-4.data
-   or:
-   tenant-hash/object-hash/version
-   Important properties:
-- User keys do not become filesystem paths.
-- Directories contain a bounded number of entries.
-- Every update gets a new physical version.
-- Metadata maps logical keys to physical locations.
-- Temporary files use a dedicated staging directory.
-- Storage volumes can be selected by a placement policy.
-  For one machine, local storage can work if backed by reliable disks, RAID, snapshots, and backups. S3-compatible storage is optional unless durability, capacity, or recovery requirements exceed one host.
-  Metadata Table Strategy
-  One logical metadata table is still preferable because every namespace currently has the same schema.
-  For millions of files, PostgreSQL can handle a shared table if indexes and queries are designed properly:
-  objects (
-  object_id UUID PRIMARY KEY,
-  namespace TEXT NOT NULL,
-  logical_key TEXT NOT NULL,
-  version BIGINT NOT NULL,
-  status TEXT NOT NULL,
-  file_name TEXT NOT NULL,
-  size_bytes BIGINT NOT NULL,
-  checksum_sha256 TEXT NOT NULL,
-  storage_location TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL,
-  deleted_at TIMESTAMPTZ,
-  UNIQUE (namespace, logical_key)
-  )
-  Useful indexes should be driven by supported queries:
-  (namespace, logical_key)
-  (namespace, created_at, object_id)
-  (namespace, status, updated_at)
-  (namespace, file_extension, object_id)
-  (namespace, size_bytes, object_id)
-  Do not create indexes for every possible metadata field. Each index increases upload and update cost.
-  If the table becomes extremely large, use PostgreSQL declarative partitioning by namespace hash or object ID hash. Keep one logical schema rather than application-created tables.
-  Query Scalability
-  Current offset pagination becomes slower as offsets grow: ObjectStatement.java:474-512.
-  Replace it with cursor pagination:
-  WHERE namespace = ?
-  AND (created_at, object_id) > (?, ?)
-  ORDER BY created_at, object_id
-  LIMIT ?
-  Also:
-- Require a maximum query limit.
-- Require deterministic ordering.
-- Stream or page results instead of returning an unlimited List.
-- Restrict filter combinations to indexed query patterns.
-- Avoid unrestricted LIKE '%text%' on large tables.
-- Use a separate search index if arbitrary search is required.
-  Database Concurrency
-  The current code opens a connection for every operation, which is acceptable only if the supplied DataSource is pooled.
-  Required changes:
-- Require or document a connection pool such as HikariCP.
-- Set maximum pool size based on database capacity, not request-thread count.
-- Add statement and transaction timeouts.
-- Use transactions for related metadata changes.
-- Use PostgreSQL-native timestamp and UUID types.
-- Add formal schema migrations.
-- Avoid one synchronous metadata write for every download.
-  Implemented: `ObjectManager.get()` records accesses in `AccessStatsTracker` using
-  `LongAdder`-style counters, and a daemon flusher persists periodic JDBC batches.
-  `updateAccess()` remains available only for explicit synchronous use.
-  Remaining optional refinements:
-- Sample last-access updates.
-- Accept approximate access counts for caching and archival decisions.
-- Keep exact access events only if auditing requires them.
-  Backpressure
-  Streaming avoids heap exhaustion, but unlimited concurrent streams can exhaust:
-- File descriptors
-- Database connections
-- Disk throughput
-- Temporary storage
-- Worker threads
-  Add:
-- Maximum upload size
-- Global concurrent upload limit
-- Per-namespace concurrent-operation limit
-- Bounded executors
-- Request deadlines and cancellation
-- Disk-space thresholds
-- Maximum open-stream count
-- Clear overload errors instead of unlimited queuing
-  Caching And Archiving
-  The configured cache manager is currently unused: ObjectManager.java:36-42.
-  For one JVM:
-- Use an in-memory metadata cache with a strict size bound.
-- Cache file bytes only for small, frequently accessed objects.
-- Let the operating system page cache handle large local files.
-- Avoid implementing a complex LFU cache until access metrics show it is necessary.
-- Run archival decisions asynchronously.
-- Archive immutable versions, update metadata only after successful archival, then delete the local copy.
-- Do not compress already-compressed formats such as JPEG, MP4, ZIP, or PDF without measuring benefit.
-  Thread-Safety Problems
-- namespaceList is a static ArrayList: ObjectManager.java:33.
-- Namespace check and insertion are not atomic: ObjectManager.java:57-70.
-- Additional key ordering comes from HashMap, making path composition unstable.
-- There are no keyed locks, optimistic versions, or deletion states.
-- Reads can race with file replacement and deletion.
-- Batch operations have no stable snapshot or transaction boundary.
-  One JVM makes these easier to fix, but they still must be fixed.
-  Recommended Priority
-1. Correct object identity and database constraints.
-2. Introduce immutable physical versions and lifecycle states.
-3. Add keyed mutation locking plus optimistic database versions.
-4. Replace table-per-namespace with a fixed schema.
-5. Add hashed filesystem layout and strict path containment.
-6. Replace unlimited list queries and offset pagination.
-7. Fix batch deletion using bounded cursor-based jobs.
-8. Add connection pooling, timeouts, and backpressure.
-9. Aggregate access statistics asynchronously. (done via `AccessStatsTracker`)
-10. Add reconciliation, orphan cleanup, metrics, and failure-injection tests.
-    Under the one-JVM assumption, Veil does not need distributed locking, service discovery, or cross-node cache coherence. Its central challenge is instead building a bounded, crash-recoverable, concurrency-safe pipeline between PostgreSQL and high-volume byte storage.
+# Veil — Current Issues (August 2026)
 
-Missing features (from requirements.md)
-1. No validation policy — requirement "fits the requirements (file type, file size), duplicate, strategy" is unimplemented. put/update accept any type/size, no dedup, no max-size.
-2. No archive/"achieve" function — nothing compresses/evicts files idle past a threshold.
-3. LFU/hot-file cache unused — cacheStorageManager is stored but get() always reads mainStorageManager (ObjectManager.java:136); hot-file caching never happens.
-   Wrong / broken design
-4. Object identity is broken (still issues.md #1). DB PK is key alone (DatabaseManager.java:43); getMetadata/getStorageLocation/delete/updateAccess filter only by key. Additional keys change the file path but not lookup or uniqueness. get(key=x, user_id=u1) on a row stored with user_id=u2 resolves metadata for u2 but reads ns/x_u1 → mismatch/missing file.
-5. SQL injection via namespace — every query concatenates Config.DATABASE_PREFIX + "_" + namespace (e.g. DatabaseManager.java:92,160). validateLocation (ObjectManager.java:435) rejects /,\,..,~,- but allows ", ;, --, so ObjectManager.build("foo\"; DROP ...") injects table names.
-6. Metadata committed before file is in place (issues.md #2, still open). store() does upsertMetadata(READY) → then rename (ObjectManager.java:324-326). Crash between them leaves metadata pointing at a missing file; rename failure isn't handled (only temp cleanup), no lifecycle status (UPLOADING/READY/DELETING), no version column, no optimistic locking.
-7. removeAll still unbounded — loads all rows into a list (ObjectManager.java:257) then runs one DELETE ignoring limit; diverges from query paging, risks orphan files / memory blowup at scale.
-8. updateMetadata lets you corrupt metadata — validateUpdateColumn only excludes key columns, so md5, file_size, storage_location, storage_type, created_at, access_count are all settable without touching content; breaks the md5==bytes invariant the concurrency tests assert.
-9. ~~Synchronous UPDATE on every get()~~ — fixed: `ObjectManager.get()` now uses `DatabaseManager.recordAccess()`, which accumulates deltas in `AccessStatsTracker` and flushes them in periodic JDBC batches. `updateAccess()` remains only as an explicit synchronous write.
-10. DiskFileManager.resolve() still only normalizes (DiskFileManager.java:148) — no startswith-root containment, no symlink defense, no exists/size.
-11. No backpressure/scalability — no max upload size, concurrency limits, cursor pagination (still offset), query limits, or timeouts.
-    Lower priority
-- Table-per-namespace with TEXT timestamps, no updated_at; MD5 vs SHA-256; static 64-stripe global lock; dead/confusing FileManager.get() (returns OutputStream); reads open the stream under the stripe lock and hold it after unlock (Windows rename semantics); static namespace registry couples to the singleton config.
-  Suggested priority order (if you want to proceed)
-1. Namespace identifier whitelist (kill injection) + real composite identity (key+additional keys in PK and all WHERE clauses).
-2. Lifecycle states + version/optimistic locking; commit READY only after file rename; reconcile orphans.
-3. Async/aggregated access stats; bounded removeAll.
-4. updateMetadata whitelist; containment-hardened DiskFileManager.
-5. Validation policy, archive function, LFU cache, pagination/backpressure, hash-fan-out layout.
+Snapshot from a full codebase review. Several problems from the previous `issues.md` are
+now fixed (listed first); the rest are still open and ordered by severity. Line numbers
+refer to the current code.
+
+## Fixed since the last review
+
+- Physical-path collision from `_`-composed locations (old #1): storage paths are now
+  derived from an opaque `object_id` with SHA-256 hash fan-out
+  (`namespace/<h1>/<h2>/<objectId>[.<ext>]`), never from user key values
+  (`ObjectManager.buildStoragePath`, `ObjectManager.java:417`). Locking uses an identity
+  string (`buildLockKey`), not a path.
+- Object identity / composite PK across additional key columns (old #1): PK spans
+  `(key, additional_keys)` and all keyed operations filter on the full identity.
+- SQL injection via namespace (old #5): `Namespaces.requireValid` whitelist.
+- Unbounded `removeAll` (old #3/#7): method removed.
+- Synchronous `UPDATE` per `get()` (old #9): replaced by in-memory `AccessStatsTracker`
+  with batched write-behind flush.
+- Store order flipped to file-first / metadata-after (old #2): the happy path is
+  consistent, but the failure path is still broken (see #1 below).
+
+## Critical correctness bugs
+
+1. **Failed upsert on overwrite leaves metadata and bytes permanently mismatched.**
+   `store()` renames the temp file over the live location with `REPLACE_EXISTING`
+   (destroying the old bytes) *before* `upsertMetadata` (`ObjectManager.java:312-320`).
+   If the upsert throws, the row keeps the old md5/size while the file holds the new
+   bytes — unrecoverable, and `get()` then returns checksum/size that do not match the
+   stream. The failure-injection test `updateKeepsRowUntouchedAndNoTempFilesWhenUpsertFailsSameLocation`
+   *codifies* the broken state instead of preventing it. Root cause: one mutable physical
+   file per identity. Fix requires immutable versioned files + a lifecycle state
+   (UPLOADING/READY) committed only after the file is in place.
+
+2. **`updateMetadata`/`executeUpdate` can corrupt integrity fields.**
+   `validateUpdateColumn` only checks that the column is a metadata column
+   (`DatabaseManager.java:724`), so `md5`, `file_size`, `storage_location`,
+   `storage_type`, `created_at`, `access_count` are all settable without touching the
+   file — breaking the md5/size==bytes invariant and the access stats. `file_name` and
+   `file_extension` can also be set inconsistently (a test even asserts
+   `file_name="renamed.png"` with `file_extension="jpg"`), and setting `file_extension`
+   never renames the physical file nor updates `storage_location`, so that column drifts
+   from reality.
+
+3. **`DatabaseManager.executeDelete`/`executeUpdate` batch ops are metadata-only.**
+   `executeDelete` (`DatabaseManager.java:495`) removes rows without touching the
+   filesystem, orphaning physical files. It is a foot-gun that silently breaks the
+   file↔metadata invariant `ObjectManager` maintains.
+
+## Wrong / dead design
+
+4. **Global singleton + static registries: one storage setup per JVM.**
+   `VeilConfiguration` is a process-wide singleton (`VeilConfiguration.java:18`) and
+   `ObjectManager` pulls its storage managers from it, while `namespaceList`, `instances`
+   and the global `keyedLock` are static (`ObjectManager.java:47-49`). Two independent
+   Veil usages (tests + app, two tenants) cannot coexist, and namespaces are never
+   releasable.
+
+5. **Cache manager and `FileManager.get()` are dead code.**
+   `cacheStorageManager` is stored but `get()` always reads `mainStorageManager`
+   (`ObjectManager.java:144`); the LFU hot-file cache from requirements.md is
+   unimplemented. `FileManager.get()` (returns an `OutputStream`) is never called.
+
+6. **Table-per-namespace with runtime DDL.**
+   `CREATE TABLE IF NOT EXISTS veil_metadata_<namespace>` (`DatabaseManager.java:102`)
+   means no shared schema, no migrations, and DDL at runtime; additional key columns are
+   global per `DatabaseManager`, not per namespace. A single fixed `objects` table with
+   proper indexes (as the previous review recommended) is preferable.
+
+7. **MD5 checksums** (`ObjectManager.java:301`): MD5 is weak for a content checksum;
+   SHA-256 is the standard choice.
+
+8. **Timestamps stored as TEXT.**
+   `created_at`/`updated_at`/`last_accessed_at` are `TEXT NOT NULL`
+   (`DatabaseManager.java:68`). In PostgreSQL these should be native `TIMESTAMPTZ` —
+   TEXT breaks range-query planning and timezone-correct `>` comparisons.
+
+9. **Offset pagination + unbounded result lists.**
+   `query()` loads the entire result set into memory (`DatabaseManager.java:363`) and
+   uses `OFFSET` (`DatabaseManager.java:610-617`), which degrades as the offset grows;
+   there is no maximum limit. Replace with cursor pagination and a bounded page size.
+
+## Concurrency / robustness gaps
+
+10. **Crash window in `remove()`.** The metadata row is deleted before the file
+    (`ObjectManager.java:170-180`); a process crash in between leaves an orphaned row
+    (the restore is only in-process). No reconciliation worker exists to clean up
+    UPLOADING/DELETING leftovers or orphaned files.
+
+11. **`get()` returns a stream that outlives the lock.**
+    `get()` opens the `InputStream` under the stripe lock and hands it to the caller
+    (`ObjectManager.java:137-146`). On Windows a concurrent `update`/`remove` rename will
+    fail while the stream is open; on POSIX the reader keeps reading a concurrently
+    deleted object with no version guard.
+
+12. **Static 64-stripe global lock.** `keyedLock` has 64 stripes (`StripedLock.java`),
+    so unrelated keys and namespaces serialize on hash collisions at high concurrency.
+
+13. **No backpressure.** No maximum upload size, no concurrent-operation limits, no
+    disk-space thresholds, no open-stream cap, no request deadlines/timeouts.
+
+14. **Access stats are process-local and lossy.** `AccessStatsTracker` accumulates up to
+    ~1s of deltas that are lost on crash (acceptable, documented) and keeps a static
+    daemon executor that prevents the `DatabaseManager` from being GC'd.
+
+## Minor
+
+15. **`validateLocation` rejects legitimate keys** starting with `-` or `~`
+    (`ObjectManager.java:524`), e.g. `-foo`.
+16. **Postgres tests require Docker** (Testcontainers); they cannot run in bare CI.
+17. **No schema migrations.** `CREATE TABLE IF NOT EXISTS` only; the recent `object_id`
+    column cannot be added to an existing table without manual `ALTER`.
+
+## Suggested priority
+
+1. Versioned immutable files + lifecycle states (fixes #1 and #10).
+2. Whitelist updatable metadata columns; stop `executeDelete`/batch `executeUpdate`
+   from breaking invariants (#2, #3).
+3. Move away from the singleton/static registry so multiple setups can coexist (#4).
+4. Implement or remove the cache layer (#5); single fixed-schema table + migrations (#6, #17).
+5. SHA-256, native timestamps, cursor pagination, backpressure (#7, #8, #9, #13).
